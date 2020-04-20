@@ -1,0 +1,443 @@
+---
+title: "Kaggle - Titanic"
+subtitle: "Step 1: Data Management"
+author: "Michael Foley"
+date: "4/20/2020"
+output: 
+  html_document:
+    theme: flatly
+    toc: true
+    highlight: haddock
+    fig_width: 9
+    fig_caption: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+This is an analysis of the *Titanic* dataset for the Kaggle competition [Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic).  Kaggle's Grant Applications competition challenges participants to predict the survivorship (1 = survived, 0 = perished) of 418 passengers aboard the April 1912 maiden voyage of the Titanic submitted by the University of Melbourne between 2009 and 2010.  The training and test datasets include 249 features. The training dataset contains 8,708 observations from applications made between 2005 and 2008.  Competitors build a predictive model with the training dataset, then apply the model to the test dataset to produce a submission file consisting of the observation id and the predicted probability of application success.  Kaggle evaluates submissions based on the area under the ROC curve (AUC).
+
+This document addresses initial data management.  It follows the logic used in Kuhn's Applied Predictive Modeling.  (See `AppliedPredictiveModeling::scriptLocation()`.)
+
+The sinking of the Titanic is one of the most infamous shipwrecks in history.
+On April 15, 1912, during her maiden voyage, the widely considered “unsinkable” RMS Titanic sank after colliding with an iceberg. Unfortunately, there weren’t enough lifeboats for everyone onboard, resulting in the death of 1502 out of 2224 passengers and crew.
+While there was some element of luck involved in surviving, it seems some groups of people were more likely to survive than others.
+In this challenge, we ask you to build a predictive model that answers the question: “what sorts of people were more likely to survive?” using passenger data (ie name, age, gender, socio-economic class, etc). 
+
+# Overview
+
+Each row contains the outcome (`Grant.Status`) of a grant application (`Grant.Application.ID`), the application date (`Start.date`), several descriptive codes (`Sponsor.Code`, `Grant.Category.Code`, `Contract.Value.Band...see.note.A`, 5 `RFCD.Code.#` and proportions, and 5 `SEO.Code.#` and proportions), and 15 sets of attributes for persons on the application.  Those attributes include an identifier (`Person.ID.#`), role (`Role.#`) and 13 more fields.
+
+This script pivots the 15 sets of persons on the application into additional rows in the dataset, then pivots each coded attribute into count predictors.  Most of the predictors are binary. There are 730 `RFCD______` dummies, 454 `SEO_____` dummies, 292 `Sponsor___` dummies, 17 `ContractValueBand_` dummies, 11 `mmm` application month dummies, and 6 `ddd` application day of week dummies.  There are frequency variables counting the number of persons per role `num__`, and [role].[attribute] counts such as `CI.1925` for chief investigators born between 1925 and 1930.  The publication information is represented in two ways, first, as totals for each role, such as `B.CI`, and second as total counts across all individuals, such as `AstarTotal` or all journal  types (`allPub`).  The calendar day of the year is stored as a numeric variable (`Day`). The class outcome is contained in a factor variable `Class` with levels `successful` and `unsuccessful`. 
+
+The script splits the data into two data frames: `training` contains the 6,633 pre-2008 observations plus a holdout set of 1,557 observations from 2008 used to tune the model for a total of 8,190 observations; `testing` contains the remaining 518 observations from 2008.  Total rows = 8,190 + 518 = 8,708.  A vector `pre2008` contains the row indices of the 6,633 pre-2008 observations.
+
+The full set of predictors, identified by name in vector `fullSet`, include variables with zero variance or high ($\rho$ >0.99) correlation to other variables.  A reduced set of variables, identified by name in vector `reducedSet` removes the zero varaiance and highly correlated variables.
+
+
+# Setup
+
+```{r message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(caret)
+```
+
+
+# Load Data
+
+```{r warning=FALSE, message=FALSE}
+d_raw_1 <- read_csv("./unimelb_training.csv", guess_max = 10000)
+
+glimpse(d_raw_1)
+```
+
+
+# Clean Data
+
+## Fix data types
+
+```{r}
+d_raw_2 <- d_raw_1 %>%
+  mutate(
+    X252 = NULL,  # extra col loaded by read_csv
+    Role.1 = replace_na(Role.1, "Unk"),  # Force a value for Role.1
+    Sponsor.Code = factor(paste0("Sponsor", replace_na(Sponsor.Code, "Unk"))),
+    Grant.Category.Code = factor(paste0("GrantCat", replace_na(Grant.Category.Code, "Unk"))),
+    Contract.Value.Band...see.note.A =  factor(paste0("ContractValueBand", replace_na(Contract.Value.Band...see.note.A, "Unk"))),
+    Start.date = lubridate::dmy(Start.date),
+  ) %>%
+  mutate_at(vars(
+      starts_with("Person.ID."),
+      starts_with("Role."),
+      starts_with("RFCD.Code."),
+      starts_with("SEO.Code."),
+      starts_with("Country.of.Birth"),
+      starts_with("Home.Language."),
+      starts_with("Dept.No.."),
+      starts_with("Faculty.No.."),
+      starts_with("No..of.Years.in.Uni.at.Time.of.Grant."),
+      starts_with("With.PHD.")
+    ),
+    as.character
+  ) %>%
+  mutate_at(vars(
+      starts_with("Year.of.Birth."),
+      starts_with("Number.of.Successful.Grant."),
+      starts_with("Number.of.Unsuccessful.Grant."),
+      starts_with("A.."),
+      starts_with("A."),
+      starts_with("B."),
+      starts_with("C.")
+    ),
+    as.numeric
+  )
+glimpse(d_raw_2)
+```
+
+## Transform 15 roles into 15 rows
+
+There are 15 roles on the grant application with associated attributes.  Transform these 15 sets of columns into 15 sets of rows.
+
+```{r}
+tmp <- vector(mode = "list", length = 15)
+for (i in 1:15) {
+  x <- select_at(d_raw_2, vars(c(1:6), ends_with(paste0(".", i))))
+  names(x) <- str_remove(names(x), paste0(".", i))
+  if(all(names(x) != "RFCD.Code")) x$RFCD.Code <- NA
+  if(all(names(x) != "RFCD.Percentage")) x$RFCD.Percentage <- NA
+  if(all(names(x) != "SEO.Code")) x$SEO.Code <- NA
+  if(all(names(x) != "SEO.Percentage")) x$SEO.Percentage <- NA
+  tmp[[i]] = x
+}
+
+d_raw_3 <- bind_rows(tmp)
+
+d_raw_3 <- filter(d_raw_3, !is.na(Role))
+
+rm(tmp, i, x)
+
+glimpse(d_raw_3)
+```
+
+## Clean text and make factors
+
+```{r}
+d_raw_4 <- d_raw_3 %>% 
+  mutate(
+    Year.of.Birth = factor(Year.of.Birth),
+    Country.of.Birth = factor(str_remove_all(Country.of.Birth, " ")),
+    Home.Language = factor(str_replace(Home.Language, "Other", "OtherLang")),
+    With.PHD = str_replace(With.PHD, "Yes", "PhD"),
+    Dept.No. = factor(paste0("Dept", Dept.No.)),
+    Faculty.No. = factor(paste0("Faculty", Faculty.No.)),
+    RFCD.Percentage = if_else(
+      RFCD.Code %in% c("0", "999999"), as.numeric(NA), RFCD.Percentage),
+    RFCD.Code = factor(paste0("RFCD", if_else(
+      RFCD.Code %in% c("0", "999999"), as.character(NA), RFCD.Code))),
+    SEO.Percentage = if_else(
+      SEO.Code %in% c("0", "999999"), as.numeric(NA), SEO.Percentage),
+    SEO.Code = factor(paste0("SEO", if_else(
+      SEO.Code %in% c("0", "999999"), as.character(NA), SEO.Code))),
+    No..of.Years.in.Uni.at.Time.of.Grant = factor(case_when(
+      is.na(No..of.Years.in.Uni.at.Time.of.Grant) ~ "DurationUnk",
+      No..of.Years.in.Uni.at.Time.of.Grant == ">=0 to 5" ~ "Duration0to5",
+      No..of.Years.in.Uni.at.Time.of.Grant == ">5 to 10" ~ "Duration5to10",
+      No..of.Years.in.Uni.at.Time.of.Grant == ">10 to 15" ~ "Duration10to15",
+      No..of.Years.in.Uni.at.Time.of.Grant == "more than 15" ~ "DurationGT15",
+      No..of.Years.in.Uni.at.Time.of.Grant == "Less than 0" ~ "DurationLT0",
+      TRUE ~ as.character(NA)
+    )),
+    Role = case_when(
+      Role == "EXT_CHIEF_INVESTIGATOR" ~ "ECI",
+      Role == "STUD_CHIEF_INVESTIGATOR" ~ "SCI",
+      Role == "CHIEF_INVESTIGATOR" ~ "CI",
+      Role == "DELEGATED_RESEARCHER" ~ "DR",
+      Role == "EXTERNAL_ADVISOR" ~ "EA",
+      Role == "HONVISIT" ~ "HV",
+      Role == "PRINCIPAL_SUPERVISOR" ~ "PS",
+      Role == "STUDRES" ~ "SR",
+      TRUE ~ "UNK"
+    )
+  )
+glimpse(d_raw_4)
+```
+
+
+# Manage Data
+
+## Create count vars
+
+Create role-specific count variables for home language, nationality, degree, etc. 
+
+Define a function to perform pivoting.
+
+```{r}
+trim_cols <- function(dat) {
+  keepers <- unlist(lapply(dat, function(x) length(unique(x)) > 1))
+  trimmed <- dat[, keepers, drop = FALSE] %>% select_at(vars(-ends_with("NA")))
+  trimmed
+}
+pivot_role <- function(dat, col) {
+  dat$cnt_col <- unlist(dat[, col])
+  dat_2 <- dat %>% mutate(metric = paste0(Role, ".", cnt_col))
+  tab_df <- as.data.frame(table(dat_2$Grant.Application.ID, dat_2$metric)) 
+  names(tab_df) <- c("Grant.Application.ID", "Val", "Freq")
+  tab_wide <- tab_df %>% pivot_wider(names_from = Val, values_from = Freq)
+  tab_trimmed <- trim_cols(tab_wide)
+  tab_trimmed
+}
+```
+
+
+```{r warning=FALSE}
+people <- d_raw_4 %>% count(Grant.Application.ID, name = "numPeople")
+
+investCount <- d_raw_4 %>% count(Grant.Application.ID, Role) %>%
+  pivot_wider(names_from = Role, values_from = n, values_fill = list(n = 0),
+              names_prefix = "Num")
+
+investDOB <- pivot_role(d_raw_4, "Year.of.Birth")
+
+investCountry <- pivot_role(d_raw_4, "Country.of.Birth")
+
+investLang <- pivot_role(d_raw_4, "Home.Language")
+
+investPhD <- pivot_role(d_raw_4, "With.PHD")
+
+investGrants_s <- d_raw_4 %>% 
+  group_by(Grant.Application.ID, Role) %>%
+  summarize(n = sum(Number.of.Successful.Grant, na.rm = TRUE)) %>%
+  ungroup() %>%
+  pivot_wider(
+    id_cols = Grant.Application.ID, names_from = Role, values_from = n, 
+    names_prefix = "Success.", values_fill = list(n = 0)) %>%
+  trim_cols()
+
+investGrants_u <- d_raw_4 %>% 
+  group_by(Grant.Application.ID, Role) %>%
+  summarize(n = sum(Number.of.Unsuccessful.Grant, na.rm = TRUE)) %>%
+  ungroup() %>%
+  pivot_wider(
+    id_cols = Grant.Application.ID, names_from = Role, values_from = n, 
+    names_prefix = "Unsuccess.", values_fill = list(n = 0)) %>%
+  trim_cols
+investGrants <- inner_join(investGrants_s, investGrants_u, 
+                           by = "Grant.Application.ID")
+rm(investGrants_s, investGrants_u)
+
+investDept <- pivot_role(d_raw_4, "Dept.No.")
+
+investFaculty <- pivot_role(d_raw_4, "Faculty.No.")
+
+investDuration <- d_raw_4 %>% 
+  count(Grant.Application.ID, No..of.Years.in.Uni.at.Time.of.Grant) %>%
+  ungroup() %>%
+  pivot_wider(
+    id_cols = Grant.Application.ID, 
+    names_from = No..of.Years.in.Uni.at.Time.of.Grant, values_from = n, 
+    values_fill = list(n = 0)) 
+
+totalPub = d_raw_4 %>%
+  group_by(Grant.Application.ID) %>%
+  summarize(
+    AstarTotal = sum(A., na.rm = TRUE),
+    ATotal = sum(A, na.rm = TRUE),
+    BTotal = sum(B, na.rm = TRUE),
+    CTotal = sum(C, na.rm = TRUE),
+    allPub = sum(c(A., A, B, C), na.rm = TRUE)
+  )
+  
+n_astar <- d_raw_4 %>% 
+  group_by(Grant.Application.ID, Role) %>%
+  summarize(x = sum(A., na.rm = TRUE)) %>%
+  pivot_wider(names_from = Role, values_from = x, values_fill = list(x = 0),
+              names_prefix = "Astar.") %>%
+  trim_cols()
+
+
+n_a <- d_raw_4 %>% 
+  group_by(Grant.Application.ID, Role) %>%
+  summarize(x = sum(A, na.rm = TRUE)) %>%
+  pivot_wider(names_from = Role, values_from = x, values_fill = list(x = 0),
+              names_prefix = "A.") %>%
+  trim_cols()
+
+n_b <- d_raw_4 %>% 
+  group_by(Grant.Application.ID, Role) %>%
+  summarize(x = sum(B, na.rm = TRUE)) %>%
+  pivot_wider(names_from = Role, values_from = x, values_fill = list(x = 0),
+              names_prefix = "B.") %>%
+  trim_cols()
+
+n_c <- d_raw_4 %>% 
+  group_by(Grant.Application.ID, Role) %>%
+  summarize(x = sum(C, na.rm = TRUE)) %>%
+  pivot_wider(names_from = Role, values_from = x, values_fill = list(x = 0),
+              names_prefix = "C.") %>%
+  trim_cols()
+
+investPub <- inner_join(n_astar, n_a, by = "Grant.Application.ID") %>%
+  inner_join(n_b, by = "Grant.Application.ID") %>%
+  inner_join(n_c, by = "Grant.Application.ID")
+rm(n_astar, n_a, n_b, n_c)
+
+RFCDcount <- d_raw_4 %>% 
+  count(Grant.Application.ID, RFCD.Code) %>%
+  pivot_wider(names_from = RFCD.Code, values_from = n, values_fill = list(n = 0)) %>%
+  trim_cols()
+
+SEOcount <- d_raw_4 %>% 
+  count(Grant.Application.ID, SEO.Code) %>%
+  pivot_wider(names_from = SEO.Code, values_from = n, values_fill = list(n = 0)) %>%
+  trim_cols()
+```
+
+
+## Create dummy vars
+
+```{r}
+grantData <- d_raw_2 %>%
+  mutate(
+    Month = factor(as.character(month(Start.date, label = TRUE))),
+    Weekday = factor(as.character(wday(Start.date, label = TRUE))),
+    Day = day(Start.date)
+  ) %>%
+  select(Sponsor.Code, Contract.Value.Band...see.note.A, 
+         Grant.Category.Code, Month:Day)
+
+dummies <- dummyVars(~., data = grantData, levelsOnly = TRUE)
+grantData <- as.data.frame(predict(dummies, grantData))
+
+grantData$Grant.Application.ID <- d_raw_2$Grant.Application.ID
+grantData$Class <- factor(ifelse(d_raw_2$Grant.Status, "successful", "unsuccessful"))
+grantData$is2008 <- year(d_raw_2$Start.date) == 2008
+
+grantData <- trim_cols(grantData)
+```
+
+## Merge counts and dummies
+
+```{r}
+d_raw_5 <- merge(investCount, investDOB)
+d_raw_5 <- merge(d_raw_5, investCountry)
+d_raw_5 <- merge(d_raw_5, investLang)
+d_raw_5 <- merge(d_raw_5, investPhD)
+d_raw_5 <- merge(d_raw_5, investGrants)
+d_raw_5 <- merge(d_raw_5, investDept)
+d_raw_5 <- merge(d_raw_5, investFaculty)
+d_raw_5 <- merge(d_raw_5, investDuration)
+d_raw_5 <- merge(d_raw_5, investPub)
+d_raw_5 <- merge(d_raw_5, totalPub)
+d_raw_5 <- merge(d_raw_5, people)
+d_raw_5 <- merge(d_raw_5, RFCDcount)
+d_raw_5 <- merge(d_raw_5, SEOcount)
+d_raw_5 <- merge(d_raw_5, grantData)
+d_raw_5$Grant.Application.ID <- NULL
+d_raw_5 <- d_raw_5 %>% select(Class, sort(colnames(d_raw_5)))
+
+rm(investCount, investDOB, investCountry, investLang, investPhD, investGrants,
+   investDept, investFaculty, investDuration, investPub, totalPub, people,
+   RFCDcount, SEOcount, grantData, dummies)
+```
+
+
+# Create Test and Train
+
+## Split the data
+
+If the grant success rate were relatively constant over the years, a reasonable data splitting strategy would be to use all data from 2005 to 2008, reserving some data for a test set, and resampling the remainder for tuning the various models.  However, the grant success rate was not constant (see EDA), so random test sample is less relevant.  One alternative is to fit models to pre-2008 data, then tune them on 2008 data. Essentially, 2008 would serve as a single test. However, this strategy may lead to over-fitting. The compromise taken here is to build models on the pre-2008 data and tune them on a random sample of 2,075 grants from 2008. Once the optimal parameters are determined, fit the final model using these parameters to the entire training set (pre-2008 plus 2008 grants). A small holdout set of 518 grants from 2008 will be used as the test set to ensure no gross methodology errors occur from repeatedly evaluating the 2008 data during model tuning.
+
+```{r}
+dat_pre2008 <- subset(d_raw_5, !is2008)
+pre2008 <- 1:nrow(dat_pre2008)
+year2008 <- subset(d_raw_5, is2008)
+
+set.seed(568)
+inTrain <- createDataPartition(year2008$Class, p = 3/4)[[1]]
+training <- rbind(dat_pre2008, year2008[inTrain, ])
+testing   <- year2008[-inTrain, ]
+
+training$is2008 <- NULL
+testing$is2008 <- NULL
+
+training <- trim_cols(training)
+testing <- testing[, names(training)]
+
+rm(inTrain)
+```
+
+
+## Identify problematic predictors
+
+Create two character predictor set vectors, one with all the predictors less the highly correlated predictors (`fullSet`), and one that additionally removes the sparse predictors (`reducedSet`). 
+
+`training` has 1,892 variables. First, pull out the 63 highly correlated ($\rho$ >= 0.99) predictors.  `low_cor` is a list of 1,828 predictors with ($\rho$ < 0.99).
+
+```{r}
+all_preds <- names(training)[names(training) != "Class"]
+all_cor <- cor(training[, all_preds])
+high_cor <- findCorrelation(all_cor, .99)
+low_cor <- all_preds[-high_cor]
+rm(all_preds, all_cor, high_cor)
+length(low_cor)
+```
+
+From these 1,828 predictors, pull out the 753 near-zero variance predictors. That leaves 1,828 - 753 = 1,075 predictors for `fullSet`.  From these 1,075 predictors, pull out the 819 predictors with a very high frequency ratio.  That leaves 256 predictors for `reducedSet`, but also remove the 4 variables that are redundant by construction (`allPub`, `numPeople`, `Mar`, and `Sun`), leaveing 252 predictors for `reducedSet`.
+
+```{r}
+prob_preds <- nearZeroVar(training[, low_cor], saveMetrics = TRUE, 
+                          freqCut = floor(nrow(training)/5))
+
+fullSet <- rownames(subset(prob_preds, !nzv))
+
+reducedSet <- rownames(subset(prob_preds, !nzv & freqRatio < floor(nrow(training)/50)))
+
+### Perfectly collinear predictors (due to construction). March
+### and Sunday have the lowest frequencies for mo/day.
+reducedSet <- reducedSet[(reducedSet != "allPub") &
+                         (reducedSet != "numPeople") &
+                         (reducedSet != "Mar") &
+                         (reducedSet != "Sun")
+                         ]
+
+rm(low_cor, prob_preds)
+```
+
+Are we good?  The function `findLinearCombos` uses the QR decomposition of a matrix to enumerate sets of linear combinations (if they exist).  Here it is for the full set of predictors.
+
+```{r}
+colnames(training[, findLinearCombos(training[, fullSet])$remove])
+```
+
+And here it is for the reduced set of predictors.
+
+```{r}
+colnames(training[, findLinearCombos(training[, reducedSet])$remove])
+```
+
+The classification tree uses a different set of predictors with factor encodings of some of the predictors.
+
+```{r}
+factorPredictors <- names(training)[names(training) != "Class"]
+factorPredictors <- factorPredictors[!grepl("Sponsor[0-9]", factorPredictors)]
+factorPredictors <- factorPredictors[!grepl("SponsorUnk", factorPredictors)]
+factorPredictors <- factorPredictors[!grepl("ContractValueBand[A-Z]", factorPredictors)]
+factorPredictors <- factorPredictors[!grepl("GrantCat", factorPredictors)]
+factorPredictors <- factorPredictors[!(factorPredictors %in% levels(training$Month))]
+factorPredictors <- factorPredictors[!(factorPredictors %in% levels(training$Weekday))]
+
+factorForm <- paste("Class ~ ", paste(factorPredictors, collapse = "+"))
+factorForm <- as.formula(factorForm)
+```
+
+
+# Save Work
+
+```{r}
+save(d_raw_2, pre2008, year2008, training, testing, fullSet, reducedSet, 
+     file = "./grant_01.RData")
+```
+

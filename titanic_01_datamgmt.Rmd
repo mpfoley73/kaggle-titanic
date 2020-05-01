@@ -26,6 +26,8 @@ This file handles the data management, EDA, and feature engineering.  I got a lo
 
 ```{r message=FALSE}
 library(tidyverse)
+library(caret)
+library(mfstylr)
 ```
 
 
@@ -60,7 +62,82 @@ glimpse(full)
 
 # Feature Engineering
 
-At this point, I know the full dataset is 1,309 x 12, including 10 feature columns.  `Name` includes a title and surname.  The title may be predictive of survivorship.  The surname may be useful for constructing family units (do families sink or swim together?).  What else stands out?
+At this point, I know the full dataset is 1,309 x 12, including 10 feature columns.  `Name` includes a title and surname.  The title may be predictive of survivorship.  The surname may be useful for constructing family units (do families sink or swim together?).  I learned from other analyses, and supported by [Encycolpedia Titanica](https://www.encyclopedia-titanica.org/titanic-deckplans/), that the first letter of the cabin refers to the deck.  I'll parse these two fields first.
+
+## Parse Name
+
+Separate `Name` into `Surname`, `Title`, `Name`.
+
+```{r}
+full <- full %>% 
+   separate(Name, ", ", into = c("Surname", "Name")) %>%
+   separate(Name, "\\. ", into = c("Title", "Name"), extra = "merge")
+
+full %>% count(Title, sort = TRUE) 
+```
+
+There are 18 titles. If I turn them all into dummies, most will have near-zero variance.  From the documentation in `caret::nearZeroVar()`, a near zero var is one that is <10% unique and the frequency ratio to the second-most common value is > 95/5 = 19.  For dummy vars, the second-most common value is just the negation, so I can calculate both these metrics for Title's values.
+
+```{r}
+check_nzv <- function(dat, col) {
+  dat %>% count(!!sym(col), sort = TRUE) %>%
+    mutate(
+      unique = round(n / sum(n), 2),
+      ratio = n / (sum(n) - n),
+      ratio = round(if_else(ratio < 1, 1 / ratio, ratio), 0),
+      nzv = if_else(unique < 0.10 & ratio > 19, "Yes", "No")
+    )
+}
+full %>% check_nzv("Title")
+```
+
+Only the first 3 have-non-zero variance.  "Master" nearly makes the cut.  The top 4 comprise 98% of the rows.  "Mlle" (mademoiselle) and "Ms" both mean "Miss".  "Mme" means "Mrs".  I'll merge these synonyms.  The rest can go into "Other".
+
+```{r}
+full <- full %>%
+  mutate(
+    Title = case_when(
+      Title %in% c("Mlle", "Ms") ~ "Miss",
+      Title == "Mme" ~ "Mrs",
+      Title %in% c("Miss", "Mrs", "Mr", "Master") ~ Title,
+      TRUE ~ "Other"
+    )
+  )
+full %>% check_nzv("Title")
+```
+
+So basically this variable classifies men, women, boys, and girls. I wonder how valuable that is given the `Sex` and `Age` variables already in the datas set.  `Surname` has 875 unique values, so the average party size is a little less than 2.  Not sure what I can do with `Surname`.
+
+```{r}
+n_distinct(full$Surname)
+```
+
+## Parse Cabin
+
+```{r}
+full %>% summarise(sib = sum(SibSp), par = sum(Parch))
+```
+
+
+## Family structure
+
+The number of siblings plus spouse on board `SibSp`, and number of children and parents on board `Parch` present interesting possibilities.  Does party size improve survival odds?  Would a husband and wife fair better with or without a child present?  
+
+```{r}
+full[train_index, ] %>%
+  mutate(fam_size = SibSp + Parch + 1) %>%
+  count(Title, fam_size, Survived) %>%
+  ungroup() %>%
+  group_by(Title, fam_size) %>%
+  summarize(N = sum(n), N_surv = sum(Survived * n), surv_pct = sum(Survived * n) / sum(n)) %>%
+  ggplot(aes(x = Title, y = fam_size, fill = surv_pct)) + geom_tile() +
+  geom_text(aes(label = paste0(scales::percent(surv_pct), " (", N, ")"))) +
+  scale_fill_gradient(low = mf_colors["Covered Wagon"], high = mf_colors["Blue Lava"]) +
+  scale_y_discrete(limits = c(1:11))
+```
+
+
+
 
 ```{r}
 skimr::skim(full)
@@ -70,20 +147,17 @@ skimr::skim(full)
 
 ```{r}
 full %>% count(Name, sort = T) %>% head()
+full %>% filter(Name %in% c("Connolly, Miss. Kate", "Kelly, Mr. James")) %>% arrange(Name)
+```
+
+```{r}
+unique(full$Sex)
 ```
 
 
 # Manage Data
 
-Separate `Name` into `Surname`, `Title`, `Name`.
 
-```{r}
-# d_raw_2 <- d_raw_1 %>% 
-#   separate(Name, ", ", into = c("Surname", "Name")) %>%
-#   separate(Name, "\\. ", into = c("Title", "Name"), extra = "merge")
-# 
-# janitor::tabyl(d_raw_2$Title) %>% mutate(percent = round(percent, 2))
-```
 
 ```{r}
 

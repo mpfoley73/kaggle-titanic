@@ -62,9 +62,45 @@ glimpse(full)
 
 # Feature Engineering
 
-At this point, I know the full dataset is 1,309 x 12, including 10 feature columns.  `Name` includes a title and surname.  The title may be predictive of survivorship.  The surname may be useful for constructing family units (do families sink or swim together?).  I learned from other analyses, and supported by [Encycolpedia Titanica](https://www.encyclopedia-titanica.org/titanic-deckplans/), that the first letter of the cabin refers to the deck.  I'll parse these two fields first.
+At this point, I know the full dataset is 1,309 x 12, including 10 feature columns.  How are we with data types and missingness?
 
-## Parse Name
+```{r}
+skimr::skim(full)
+```
+
+Cabin is 78% `NA`, `Age` is 20% `NA`, and there is 2 `NA` for `Embarked` and 1 `NA` for `Fare`.
+
+## Impute NA: Embarked
+
+Passengers `Embarked` from three ports (C = Cherbourg, Q = Queenstown, S = Southampton).  Two passengers have `NA`.
+
+```{r}
+full %>% filter(is.na(Embarked))
+```
+
+Both traveled without parents or siblings, so we can't try to pair them up with anyone.  We could guess by passenger class and fair.  Both were first class passengers, paying $80 for cabin B28.
+
+```{r}
+full %>% filter(Cabin == "B28")
+```
+
+```{r}
+full %>%
+  ggplot(aes(x = as.factor(Pclass), y = Fare, color = Embarked)) + geom_boxplot() +
+  labs(title = "Embarked by Fare and Class")
+```
+
+Seems like port `C` is a good guess.
+
+```{r}
+full$Embarked <- replace_na(full$Embarked, "C")
+```
+
+
+## Name -> Surname, Title, Name
+
+
+`Name` includes a title and surname.  The title may be predictive of survivorship.  The surname may be useful for constructing family units (do families sink or swim together?).  I learned from other analyses, and supported by [Encycolpedia Titanica](https://www.encyclopedia-titanica.org/titanic-deckplans/), that the first letter of the cabin refers to the deck.  I'll parse these two fields first.
 
 Separate `Name` into `Surname`, `Title`, `Name`.
 
@@ -101,7 +137,8 @@ full <- full %>%
       Title == "Mme" ~ "Mrs",
       Title %in% c("Miss", "Mrs", "Mr", "Master") ~ Title,
       TRUE ~ "Other"
-    )
+    ),
+    Title = parse_factor(Title)
   )
 full %>% check_nzv("Title")
 ```
@@ -112,10 +149,147 @@ So basically this variable classifies men, women, boys, and girls. I wonder how 
 n_distinct(full$Surname)
 ```
 
-## Parse Cabin
+## Cabin -> Deck
+
+`Cabin` contains both the deck [A-G] + [T] (Tank Top?) and cabin number (deck descriptions [here](https://jamescameronstitanic.fandom.com/wiki/Titanic_Decks)).  There are a few examples of multiple cabins, and in a few of these instances the multiple cabins are on multiple decks.  
 
 ```{r}
-full %>% summarise(sib = sum(SibSp), par = sum(Parch))
+unique(full$Cabin)
+```
+
+I will asssume the first listed cabin contains the deck number.
+
+```{r}
+full$Deck <- map_chr(full$Cabin, str_sub, start = 1, end = 1)
+table(full$Deck)
+```
+
+There are 8 decks listed. One fellow seems to have been assigned to the tank top, meaning he's sleeping with the ship boilers.  
+
+```{r}
+full %>% filter(Deck == "T")
+```
+
+First class passenger too - that seems wrong.  The decks are labeled in descending level above water, so the highest deck is "A" and it would have been the most exclusive.  Let's verify that.
+
+```{r}
+full %>% count(Deck, Pclass) %>%
+  ggplot(aes(x = Deck, y = n, fill = fct_rev(as.factor(Pclass)))) + geom_col() +
+  scale_fill_brewer(palette = "Paired") +
+  theme_minimal() +
+  theme(legend.position = "top") +
+  labs(title = "Passengers by Deck", fill = "Class")
+```
+
+Decks A-C are all first-class passengers, D has a few second-class, etc.  Makes sense (except for our first class passenger sleeping with the ship boilers).  Lots of nulls.  Seems like a good guess that the third-class passengers are on deck F or G.  How about average ticket fare by deck?
+
+```{r}
+full %>% group_by(Deck, Pclass) %>% 
+  summarize(n = n(), mean_fare = mean(Fare, na.rm = TRUE)) %>%
+  ggplot(aes(x = Deck, y = mean_fare, color = fct_rev(as.factor(Pclass)), size = n)) +
+  geom_jitter() +
+  scale_fill_brewer(palette = "Paired") +
+  theme_minimal() +
+  theme(legend.position = "top") +
+  labs(title = "Mean Ticket Price by Deck", color = "Class")
+```
+
+Looks like deck A was pretty good value.  I better look into that more closely.
+
+```{r}
+full %>% filter(Deck == "A") %>% select(-Survived, -Surname, -Name, -Ticket, -Cabin)
+```
+
+Nothing unusual, except that Passenger ID 807's fair was $0.  Anyone else like that?
+
+```{r}
+full %>% filter(Fare == 0) %>% count()
+skimr::
+```
+
+Hmm, kind of a lot.  
+
+If I turn them all into dummies, most will have near-zero variance.  From the documentation in `caret::nearZeroVar()`, a near zero var is one that is <10% unique and the frequency ratio to the second-most common value is > 95/5 = 19.  For dummy vars, the second-most common value is just the negation, so I can calculate both these metrics for Title's values.
+
+```{r}
+check_nzv <- function(dat, col) {
+  dat %>% count(!!sym(col), sort = TRUE) %>%
+    mutate(
+      unique = round(n / sum(n), 2),
+      ratio = n / (sum(n) - n),
+      ratio = round(if_else(ratio < 1, 1 / ratio, ratio), 0),
+      nzv = if_else(unique < 0.10 & ratio > 19, "Yes", "No")
+    )
+}
+full %>% check_nzv("Title")
+```
+
+Only the first 3 have-non-zero variance.  "Master" nearly makes the cut.  The top 4 comprise 98% of the rows.  "Mlle" (mademoiselle) and "Ms" both mean "Miss".  "Mme" means "Mrs".  I'll merge these synonyms.  The rest can go into "Other".
+
+```{r}
+full <- full %>%
+  mutate(
+    Title = case_when(
+      Title %in% c("Mlle", "Ms") ~ "Miss",
+      Title == "Mme" ~ "Mrs",
+      Title %in% c("Miss", "Mrs", "Mr", "Master") ~ Title,
+      TRUE ~ "Other"
+    )
+  )
+full %>% check_nzv("Title")
+```
+
+```{r}
+# Out of curiosity, what are the unique cabins?
+str_split(full$Cabin, " ") %>% unlist() %>% unique() %>% .[!is.na(.)] %>% sort()
+
+# Extract Deck
+full$Deck <- map_chr(str_extract_all(full$Cabin, "[A-Z]"), function(.decks_list) {
+  paste0(unique(.decks_list), collapse = ",")
+}) %>% "[<-"(., . == "NA", NA)
+
+# How is Deck distributed?
+d %>% filter(Set == "Train") %>% tabyl(Deck) %>% adorn_pct_formatting() %>% arrange(desc(n))
+
+# Convert Deck to factor and combine levels F, "F,E" and "F,G" (because they are all on Deck F)
+d$Deck <- 
+  parse_factor(d$Deck) %>% 
+  fct_explicit_na() %>% 
+  fct_collapse(`F` = c("F", "F,E", "F,G"))
+
+d %>% filter(Set == "Train") %>% tabyl(Deck) %>% adorn_pct_formatting() %>% arrange(desc(n))
+
+# How is survival rate affected by Deck (after consolidating sparse levels)?
+d %>% 
+  filter(Set == "Train") %>%
+  mutate(Survived = recode_factor(Survived, Y = "Lived", N = "Died"),
+         Deck = fct_lump(Deck, 5)) %>%
+  count(Deck, Survived) %>%
+  pivot_wider(names_from = Survived, values_from = n, values_fill = list(n = 0)) %>%
+  mutate(SurvivalRate = round(Lived/(Lived + Died), 2),
+         `% Total` = (Lived + Died)/nrow(d.train)) %>%
+  arrange(desc(SurvivalRate))
+
+#' ### Consolidate levels
+# Decks B, E, and D have similar survival rates.  Let's combine these and merge C into Other.
+d$Deck <- fct_collapse(d$Deck, B_E_D = c("B", "E", "D")) %>% fct_lump(n = 2)
+
+d %>%
+  filter(Set == "Train") %>%
+  tabyl(Deck, Survived) %>%
+  adorn_percentages() %>%
+  adorn_pct_formatting() %>%
+  adorn_ns() %>% 
+  mutate(SurvivalRate = (attr(., "core") %>% pull(Y)) / ((attr(., "core") %>% pull(Y)) + (attr(., "core") %>% pull(N))),
+         `% Total` = (attr(., "core") %>% pull(N) + attr(., "core") %>% pull(Y)) / nrow(d.train)) %>%
+  mutate_at(vars(SurvivalRate, `% Total`), round, 2) %>%
+  `names<-`(c("Deck", "Died", "Lived", "SuvivalRate", "% Total"))
+
+# Use a mosaic plot to visualize separation
+mosaicplot(data = d, Deck ~ Survived, color = T, main = NULL)
+
+# So there seems to be good separation with each level composing at least 10% of the training data.
+# Maybe this is because survivors were able to tell their stories, including what cabin they were in?
 ```
 
 
@@ -127,13 +301,14 @@ The number of siblings plus spouse on board `SibSp`, and number of children and 
 full[train_index, ] %>%
   mutate(fam_size = SibSp + Parch + 1) %>%
   count(Title, fam_size, Survived) %>%
-  ungroup() %>%
-  group_by(Title, fam_size) %>%
-  summarize(N = sum(n), N_surv = sum(Survived * n), surv_pct = sum(Survived * n) / sum(n)) %>%
-  ggplot(aes(x = Title, y = fam_size, fill = surv_pct)) + geom_tile() +
-  geom_text(aes(label = paste0(scales::percent(surv_pct), " (", N, ")"))) +
-  scale_fill_gradient(low = mf_colors["Covered Wagon"], high = mf_colors["Blue Lava"]) +
-  scale_y_discrete(limits = c(1:11))
+  ggplot(aes(x = fam_size, y = n, fill = as.factor(Survived))) + 
+  geom_col() +
+  scale_fill_brewer(palette = "Paired") +
+  scale_x_discrete(limits = c(1:11)) +
+  theme_minimal() +
+  theme(legend.position = "top") +
+  labs(title = "Survival by Title", fill = "Survived") +
+  facet_wrap(~Title, nrow = 1)
 ```
 
 

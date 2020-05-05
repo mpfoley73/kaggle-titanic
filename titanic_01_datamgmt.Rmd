@@ -354,12 +354,13 @@ full <- full %>%
 full %>%
   mutate(
     Role = case_when(
-      Sex = "female" & Age >= 20 & Age <= 50 & Parch >= 1 ~ "Mother",
-      Sex = "female" & Age >= 20 & Age > 50 & Parch >= 1 ~ "Grandmother",
-      Sex = "female" & Age > 50 & Parch >= 1 ~ "Grandmother",
-      Sex = "male" & Age <= 50 & Parch >= 1 ~ "Father",
-      Sex = "male" & Age > 50 & Parch >= 1 ~ "Grandfather",
-      Sex = "male" & Age > 50 & Parch >= 1 ~ "Grandfather",
+      Sex == "female" & Age > 50 & Parch >= 1 ~ "Grandmother",
+      Sex == "female" & Age >= 20 & Age <= 50 & Parch >= 1 ~ "Mother",
+      Sex == "female" & Age < 20 & Parch >= 1 ~ "Daughter",
+      Sex == "male" & Age <= 50 & Parch >= 1 ~ "Father",
+      Sex == "male" & Age > 50 & Parch >= 1 ~ "Grandfather",
+      Sex == "male" & Age < 20 & Parch >= 1 ~ "Son",
+      TRUE ~ "Alone"
     )
   )
 ```

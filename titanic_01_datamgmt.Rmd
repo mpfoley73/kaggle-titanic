@@ -17,7 +17,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 
-The [Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic) competition challenges participants to predict the survivorship (1 = survived, 0 = perished) of passengers aboard the April 1912 maiden voyage of the Titanic.  In total, 1,502 of the 2,224 passengers and crew perished (68%). The training (*n* = 891) and test (*n* = 418) datasets comprise only a fraction of the total (59%). The data includes 10 features. Competitors build a predictive model with the training dataset, then apply the model to the test dataset to produce a submission file consisting of `PassengerId` and `Survived` (1|0).  Kaggle evaluates submissions on *accuracy*.
+The [Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic) competition challenges participants to predict the survivorship (1 = survived, 0 = perished) of passengers aboard the April 1912 maiden voyage of the Titanic.  In total, 1,502 of the 2,224 passengers and crew perished (68%). The training (*n* = 891) and test (*n* = 418) data sets comprise only a fraction (59%) of the total. The data includes 10 features. Competitors build a predictive model with the training data set, then apply the model to the test data set to produce a submission file consisting of `PassengerId` and `Survived` (1|0).  Kaggle evaluates submissions on *accuracy*.
 
 This file handles the data management, EDA, and feature engineering.  I got a lot of ideas from [here](https://www.kaggle.com/mrisdal/exploring-survival-on-the-titanic).
 
@@ -34,7 +34,7 @@ library(mice)
 
 # Load Data
 
-Here are the [column definitions](https://www.kaggle.com/c/titanic/data) in the dataset:
+Here are the train/test data set column definitions from [Kaggle](https://www.kaggle.com/c/titanic/data).
 
 Variable | Definition
 ---|---
@@ -60,7 +60,15 @@ train_index <- c(1:891)
 glimpse(full)
 ```
 
-Change the character vars to factors.
+# Feature Engineering
+
+At this point, I know the full data set is 1,309 x 12, including 10 feature columns.  How are we with data types and missingness?
+
+```{r}
+skimr::skim(full)
+```
+
+`Survived`, `Pclass`, `Sex`, and `Embarked` should be factors.
 
 ```{r}
 full$Survived <- factor(full$Survived)
@@ -69,16 +77,7 @@ full$Sex <- factor(full$Sex)
 full$Embarked <- factor(full$Embarked)
 ```
 
-
-# Feature Engineering
-
-At this point, I know the full dataset is 1,309 x 12, including 10 feature columns.  How are we with data types and missingness?
-
-```{r}
-skimr::skim(full)
-```
-
-Cabin is 78% `NA`, `Age` is 20% `NA`, and there is 2 `NA` for `Embarked` and 1 `NA` for `Fare`.
+`Cabin` is 77% null, `Age` is 20% null, and there are 2 nulls for `Embarked` and 1 for `Fare`.  I'll take care of NAs next.
 
 ## Impute NA: Embarked
 
@@ -88,19 +87,27 @@ Passengers `Embarked` from three ports (C = Cherbourg, Q = Queenstown, S = South
 full %>% filter(is.na(Embarked))
 ```
 
-Both traveled without parents or siblings, so we can't try to pair them up with anyone.  We could guess by passenger class and fair.  Both were first class passengers, paying $80 for cabin B28.
+They traveled on the same ticket, so probably embarked from the same port.  One way to impute is to profile passengers by port and see which profile they fit best.  I'll profile by passenger class and fare.  These passengers traveled first class and paid $80 for their tickets.
 
 ```{r}
-full %>% filter(Cabin == "B28")
+plot_prof <- function(hline, subtitle){
+  full %>%
+    ggplot(aes(x = Embarked, y = Fare, color = Pclass)) + 
+    geom_boxplot(na.rm = TRUE) +
+    geom_hline(yintercept = hline, linetype = 2) +
+    scale_y_continuous(labels = scales::dollar) +
+    theme_mf() +
+    scale_color_brewer(palette = "Paired") +
+    labs(
+      y = "Fare",
+      title = "Passenger Profiles",
+      subtitle = subtitle
+    )
+}
+plot_prof(80, "First Class passengers paying $80/ticket probably embarked from Cherbourg")
 ```
 
-```{r}
-full %>%
-  ggplot(aes(x = as.factor(Pclass), y = Fare, color = Embarked)) + geom_boxplot() +
-  labs(title = "Embarked by Fare and Class")
-```
-
-Seems like port `C` is a good guess.  Could be port `S` too.  What does `mice()` say?
+Seems like port Cherbourg is a good guess, but it could be any of them.  What does `mice()` say?
 
 ```{r}
 set.seed(2020)
@@ -112,7 +119,7 @@ mice_cmpl <- complete(mice_obj)
 mice_cmpl[c(62, 830), ] %>% select(Embarked, everything())
 ```
 
-Let's go with `S` then.
+`mice()` thinks Southampton!  Okay, Southampton it is.
 
 ```{r}
 full$Embarked <- mice_cmpl$Embarked
@@ -127,22 +134,15 @@ One passenger has no listed fare.
 full %>% filter(is.na(Fare))
 ```
 
-`PassengerId` 1044 was a third-class traveler from Southampton.  
+`PassengerId` 1044 was a third-class traveler from Southampton.  Let's consult the profile again.
 
 ```{r}
 med <- full %>% filter(Embarked == "S" & Pclass == 3) %>% select(Fare) %>% 
   map(median, na.rm = TRUE) %>% unlist()
-full %>%
-  ggplot(aes(x = Embarked, y = Fare, color = Pclass)) + 
-  geom_boxplot(na.rm = TRUE) +
-  scale_y_continuous(labels = scales::dollar) +
-  theme_mf() +
-  labs(
-    y = "",
-    title = "Fare by Embarked and Class",
-    subtitle = paste0(
-      "Median fare for Southampton third class is ", scales::dollar(med), ".")
-  )
+plot_prof(
+  med, 
+  paste0("Median fare for Southampton third class is ", scales::dollar(med), ".")
+)
 ```
 
 The median fare for Southampton third-class was $8.05.  What did `mice()` say?
@@ -151,7 +151,7 @@ The median fare for Southampton third-class was $8.05.  What did `mice()` say?
 mice_cmpl[1044, ] %>% select(Fare, everything())
 ```
 
-$9.22 is reasonably close, so let's go with that.
+$9.22 is reasonably close to $8.05, and I trust MICE more than MIKE, so let's go with that.
 
 ```{r}
 full$Fare <- mice_cmpl$Fare
@@ -180,7 +180,7 @@ full$Age <- mice_cmpl$Age
 
 ## Name -> Surname, Title, Name
 
-`Name` includes a title and surname.  The title may be predictive of survivorship.  The surname may be useful for constructing family units (do families sink or swim together?).  I learned from other analyses, and supported by [Encycolpedia Titanica](https://www.encyclopedia-titanica.org/titanic-deckplans/), that the first letter of the cabin refers to the deck.  I'll parse these two fields first.
+`Name` includes a title and surname.  The title may be predictive of survivorship.  The surname may be useful for constructing family units (do families sink or swim together?), but I'm not sure how to go about doing that, so I'll focus on title.  I learned from other analyses, and supported by [Encycolpedia Titanica](https://www.encyclopedia-titanica.org/titanic-deckplans/), that the first letter of the cabin refers to the deck.  I'll parse these two fields first.
 
 Separate `Name` into `Surname`, `Title`, `Name`.
 
@@ -192,7 +192,7 @@ full <- full %>%
 full %>% count(Title, sort = TRUE) 
 ```
 
-There are 18 titles. If I turn them all into dummies, most will have near-zero variance.  From the documentation in `caret::nearZeroVar()`, a near zero var is one that is <10% unique and the frequency ratio to the second-most common value is > 95/5 = 19.  For dummy vars, the second-most common value is just the negation, so I can calculate both these metrics for Title's values.
+There are 18 titles. If I turn them all into dummies, most will have near-zero variance.  From the documentation in `caret::nearZeroVar()`, a near zero var is one that is <10% unique and the frequency ratio to the second-most common value is > 95/5 = 19.  For dummy vars, the second-most common value is just the negation, so I can easily calculate both these metrics.
 
 ```{r}
 check_nzv <- function(dat, col) {
@@ -223,7 +223,7 @@ full <- full %>%
 full %>% check_nzv("Title")
 ```
 
-So basically this variable classifies men, women, boys, and girls. I wonder how valuable that is given the `Sex` and `Age` variables already in the datas set.  `Surname` has 875 unique values, so the average party size is a little less than 2.  Not sure what I can do with `Surname`.
+So basically this variable classifies men, women, boys, and girls. (I wonder how valuable that is given the `Sex` and `Age` variables already in the data set).  `Surname` has 875 unique values, so the average party size is a little less than 2.  Not sure what I can do with `Surname`.
 
 ```{r}
 n_distinct(full$Surname)
@@ -231,17 +231,16 @@ n_distinct(full$Surname)
 
 ## Cabin -> Deck
 
-`Cabin` contains both the deck [A-G] + [T] (Tank Top?) and cabin number (deck descriptions [here](https://jamescameronstitanic.fandom.com/wiki/Titanic_Decks)).  There are a few examples of multiple cabins, and in a few of these instances the multiple cabins are on multiple decks.  
+`Cabin` contains both the deck [A-G, T] (T = Tank Top?) and cabin number (deck descriptions [here](https://jamescameronstitanic.fandom.com/wiki/Titanic_Decks)).  There are a few rows with multiple cabins, and in a few of these instances the multiple cabins are on multiple decks.  
 
 ```{r}
 unique(full$Cabin)
 ```
 
-I will asssume the first listed cabin contains the deck number.
+I will asssume the *first* listed cabin contains the deck number.
 
 ```{r}
 full$Deck <- map_chr(full$Cabin, str_sub, start = 1, end = 1) %>% factor()
-full %>% count(Deck)
 addmargins(table(full$Deck, full$Pclass, useNA = "ifany"))
 ```
 
@@ -251,7 +250,7 @@ There are 8 decks listed. One fellow seems to have been assigned to the tank top
 full %>% filter(Deck == "T")
 ```
 
-First class passenger too - that seems wrong.  The decks are labeled in descending level above water, so the highest deck is "A" and it would have been the most exclusive.  Let's verify that.
+First class passenger too - that seems wrong.  What else... The decks are labeled in descending level above water, so the highest deck is "A" and it would have been the most exclusive.  Let's verify that.
 
 ```{r}
 full %>% count(Deck, Pclass) %>%
@@ -289,7 +288,7 @@ full %>% filter(Fare == 0)
 
 17 passengers with $0 fare.  All were male. Of the 15 in the training set, 14 perished.  Passenger class varied from 1 - 3.  All embarked from Southampton.  Could they have been crew?
 
-Okay, my strategy is to un-assign the deck from Mr. Tank Top, let mice impute the NAs, then decide if I should collapse factors F and G. 
+Okay, so what am I going to do with this columnn?  First, I'll un-assign the deck from Mr. Tank Top since that just seems wrong, and I can't have a factor variable level with one row.  Then I'll let mice impute the NAs.  After that, I'll decide if I should collapse factors F and G since G was pretty sparse. Also, I think the $0 fare is interesting, so I'm going to look into that too.
 
 ```{r}
 full[340, ]$Deck <- NA
@@ -307,7 +306,7 @@ mice_cmpl <- complete(mice_obj)
 addmargins(table(mice_cmpl$Deck, mice_cmpl$Pclass, useNA = "ifany"))
 ```
 
-Deck G is sparse, so let's go ahead and collapse the level into F.
+Deck G is still sparse, so let's go ahead and collapse the level into F.
 
 ```{r}
 full$Deck <- mice_cmpl$Deck
@@ -315,10 +314,73 @@ full$Deck <- fct_collapse(full$Deck, F = "G")
 addmargins(table(full$Deck, full$Pclass, useNA = "ifany"))
 ```
 
+Oh, where did Mr. Tank Top go?
+
+```{r}
+full %>% filter(PassengerId == 340)
+```
+
+Deck B!  I feel better about that assignment.
+
+
+## Fare
+
+17 passengers paid $0 for their ticket.  What is the distribution of fares?
+
+```{r}
+full %>%
+  ggplot(aes(x = Fare, color = Survived)) + 
+  geom_density(na.rm = TRUE) +
+  theme_mf() +
+  labs(title = "Fare Distribution", color = "")
+```
+
+Most people paid under $100.  And the relationship between `Fare` and `Survived`?
+
+```{r}
+full[train_index, ] %>%
+  mutate(bin = cut(Fare, breaks = 10)) %>%
+  count(bin, Sex, Survived) %>%
+  ungroup() %>%
+  group_by(bin, Sex) %>%
+  mutate(Pct = if_else(Survived == 1, n / sum(n), as.numeric(NA))) %>%
+  ggplot(aes(x = bin, y = n, fill = Survived, label = scales::percent(Pct, accuracy = 1))) +
+  geom_col(position = position_stack()) +
+  geom_text() +
+  scale_fill_brewer(palette = "Paired") +
+  labs(title = "Survivorshp by Fare", x = "Fare") +
+  facet_wrap(~ Sex, nrow = 2)
+```
+
+Survivorship increases with ticket price with a level effect for females, but the relationship is not linear.  Look more logarithmic.
+
+```{r}
+full[train_index, ] %>%
+  mutate(bin = cut(log(Fare+.01), breaks = 10)) %>%
+  count(bin, Sex, Survived) %>%
+  ungroup() %>%
+  group_by(bin, Sex) %>%
+  mutate(Pct = if_else(Survived == 1, n / sum(n), as.numeric(NA))) %>%
+  ggplot(aes(x = bin, y = n, fill = Survived, label = scales::percent(Pct, accuracy = 1))) +
+  geom_col(position = position_stack()) +
+  geom_text() +
+  theme(legend.position = "top") +
+  scale_fill_brewer(palette = "Paired") +
+  scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
+  labs(title = "Survivorshp by log(Fare)", x = "Log(Fare)") +
+  facet_wrap(~ Sex, nrow = 2)
+```
+
+Okay, I will transform `Fare` to `logFare`.
+
+```{r}
+full$logFare <- log(full$Fare+.01)
+```
+
 
 ## Family structure
 
-The number of siblings plus spouse on board `SibSp`, and number of children and parents on board `Parch` present interesting possibilities.  Does party size improve survival odds?  Would a husband and wife fair better with or without a child present?  
+The number of siblings plus spouse on board, `SibSp`, and number of parents and children on board, `Parch` present interesting possibilities.  Does party size improve survival odds?  Would a husband and wife fair better with or without a child present?  
 
 ### Family Size
 
@@ -334,9 +396,8 @@ full[train_index, ] %>%
   geom_text(size = 3, na.rm = TRUE) +
   scale_fill_brewer(palette = "Paired") +
   scale_x_discrete(limits = c(1:11)) +
-#  theme_minimal() +
   theme(legend.position = "top") +
-  labs(title = "Survival by Title", fill = "Survived") +
+  labs(title = "Survival by Family Size", fill = "Survived") +
   facet_wrap(~Title, nrow = 3)
 ```
 
@@ -348,38 +409,62 @@ full <- full %>%
 ```
 
 
-### Role (Mom, Dad, Child)
+### Role (Mom, Dad, Son, etc.)
 
 ```{r}
-full %>%
+full <- full %>%
   mutate(
     Role = case_when(
       Sex == "female" & Age > 50 & Parch >= 1 ~ "Grandmother",
-      Sex == "female" & Age >= 20 & Age <= 50 & Parch >= 1 ~ "Mother",
+      Sex == "female" & Age >= 20 & Age <= 50 & Parch >= 1 ~ "Mother/Wife",
       Sex == "female" & Age < 20 & Parch >= 1 ~ "Daughter",
-      Sex == "male" & Age <= 50 & Parch >= 1 ~ "Father",
+      Sex == "female" & Fsize == 2 ~ "Mother/Wife",
       Sex == "male" & Age > 50 & Parch >= 1 ~ "Grandfather",
+      Sex == "male" & Age >= 20 & Age <= 50 & Parch >= 1 ~ "Father/Husb",
       Sex == "male" & Age < 20 & Parch >= 1 ~ "Son",
+      Sex == "male" & Fsize == 2 ~ "Father/Husb",
+      Fsize == 3 ~ "Group",
       TRUE ~ "Alone"
-    )
+    ),
+    Role = factor(Role)
   )
 ```
 
+```{r}
+full[train_index, ] %>%
+  count(Role, Survived) %>%
+  ungroup() %>%
+  group_by(Role) %>%
+  mutate(Pct = if_else(Survived == 1, n / sum(n), as.numeric(NA))) %>%
+  ggplot(aes(x = Role, y = n, fill = Survived, label = scales::percent(Pct))) +
+  geom_col() +
+  scale_fill_brewer(palette = "Paired") +
+  geom_text() +
+  scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
+  theme_mf() +
+  theme(axis.text.x = element_text(size = 9))
+```
+
+
+## Remove Vars
+
+The text fields are the chaffe, so discard them.
+
+```{r}
+full <- full %>% 
+  select(-Surname, -Name, -Ticket, -Cabin, -Fare) %>%
+  select(PassengerId, Survived, sort(names(.))) 
+```
+
+One final look.
 
 ```{r}
 skimr::skim(full)
 ```
 
-
-# Create Test and Train
-
-
-
-
 # Save Work
 
 ```{r}
-#save(d_raw_1, 
-#     file = "./titanic_01.RData")
+save(full, train_index, file = "./titanic_01.RData")
 ```
 

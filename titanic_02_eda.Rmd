@@ -1,8 +1,8 @@
 ---
 title: "Kaggle - Titanic"
-subtitle: "Step 1: Data Management"
+subtitle: "Step 2: Exploratory Analysis"
 author: "Michael Foley"
-date: "4/27/2020"
+date: "5/7/2020"
 output: 
   html_document:
     theme: flatly
@@ -17,62 +17,87 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 
-This is an analysis of the *Titanic* dataset for the Kaggle competition [Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic).  Kaggle's Grant Applications competition challenges participants to predict the survivorship (1 = survived, 0 = perished) of 418 passengers aboard the April 1912 maiden voyage of the Titanic submitted by the University of Melbourne between 2009 and 2010.  The training and test datasets include 249 features. The training dataset contains 8,708 observations from applications made between 2005 and 2008.  Competitors build a predictive model with the training dataset, then apply the model to the test dataset to produce a submission file consisting of the observation id and the predicted probability of application success.  Kaggle evaluates submissions based on the area under the ROC curve (AUC).
-
-This document addresses initial data management.  It follows the logic used in Kuhn's Applied Predictive Modeling.  (See `AppliedPredictiveModeling::scriptLocation()`.)
-
-The sinking of the Titanic is one of the most infamous shipwrecks in history.
-On April 15, 1912, during her maiden voyage, the widely considered “unsinkable” RMS Titanic sank after colliding with an iceberg. Unfortunately, there weren’t enough lifeboats for everyone onboard, resulting in the death of 1502 out of 2224 passengers and crew.
-While there was some element of luck involved in surviving, it seems some groups of people were more likely to survive than others.
-In this challenge, we ask you to build a predictive model that answers the question: “what sorts of people were more likely to survive?” using passenger data (ie name, age, gender, socio-economic class, etc). 
-
-# Overview
-
-Each row contains the outcome (`Grant.Status`) of a grant application (`Grant.Application.ID`), the application date (`Start.date`), several descriptive codes (`Sponsor.Code`, `Grant.Category.Code`, `Contract.Value.Band...see.note.A`, 5 `RFCD.Code.#` and proportions, and 5 `SEO.Code.#` and proportions), and 15 sets of attributes for persons on the application.  Those attributes include an identifier (`Person.ID.#`), role (`Role.#`) and 13 more fields.
-
-This script pivots the 15 sets of persons on the application into additional rows in the dataset, then pivots each coded attribute into count predictors.  Most of the predictors are binary. There are 730 `RFCD______` dummies, 454 `SEO_____` dummies, 292 `Sponsor___` dummies, 17 `ContractValueBand_` dummies, 11 `mmm` application month dummies, and 6 `ddd` application day of week dummies.  There are frequency variables counting the number of persons per role `num__`, and [role].[attribute] counts such as `CI.1925` for chief investigators born between 1925 and 1930.  The publication information is represented in two ways, first, as totals for each role, such as `B.CI`, and second as total counts across all individuals, such as `AstarTotal` or all journal  types (`allPub`).  The calendar day of the year is stored as a numeric variable (`Day`). The class outcome is contained in a factor variable `Class` with levels `successful` and `unsuccessful`. 
-
-The script splits the data into two data frames: `training` contains the 6,633 pre-2008 observations plus a holdout set of 1,557 observations from 2008 used to tune the model for a total of 8,190 observations; `testing` contains the remaining 518 observations from 2008.  Total rows = 8,190 + 518 = 8,708.  A vector `pre2008` contains the row indices of the 6,633 pre-2008 observations.
-
-The full set of predictors, identified by name in vector `fullSet`, include variables with zero variance or high ($\rho$ >0.99) correlation to other variables.  A reduced set of variables, identified by name in vector `reducedSet` removes the zero varaiance and highly correlated variables.
-
+This is a survey of the Titanic data.  The univariate analysis characterizes the predictor distributions.  The bivariate analysis characterizes relationships among the predictors.  The influential outliers analysis searches for problematic observations.
 
 # Setup
 
 ```{r message=FALSE}
 library(tidyverse)
-library(lubridate)
-library(caret)
+library(caret)  # for nearZeroVar()
+library(e1071)  # for skewness()
+library(broom)  # for tidy()
+library(agricolae)  # for HSD.test()
+library(corrplot)
 library(GGally)
 ```
 
 
 # Load Data
 
-```{r warning=FALSE, message=FALSE}
-data_dir <- "."
-load(paste0(data_dir, "/titanic_01.RData"))
+The initial data management created the data set `full`, with training rows indexed by `train_index`.
 
-glimpse(d_raw_1)
+```{r warning=FALSE, message=FALSE}
+load("./titanic_01.RData")
+
+glimpse(full)
+```
+
+# Univariate Analysis
+
+In this section I will look at data distributions (univariate analysis). For factor variables, I am interested in which have near-zero-variance. For quantitative variables, I am looking for significant skew.
+
+```{r}
+preds_class <- full %>% select(-Survived, -PassengerId) %>% map(class) %>% unlist()
+preds_factor <- subset(preds_class, preds_class == "factor") %>% names()
+preds_numeric <- subset(preds_class, preds_class == "numeric") %>% names()
+rm(preds_class)
+
+assertthat::are_equal(length(c(preds_factor, preds_numeric)), ncol(full) - 2)
+```
+
+I will inspect each factor variable, looking for near-zero-variance predictors. I won’t remove them here, but I might remove them in the modeling pre-process step if they cause zero-variance in cv folds (see discussion here). caret has a nice function nearZeroVar() to identify near-zero variance predictors. It defines near-zero variance as a frequency ratio (ratio of the most common value frequency to the second most common value frequency) >= 19 and a percent of unique values <= 10% (see caret package documentation). (DataCamp course Machine Learning Toolbox suggests more aggressive thresholds of frequency ratio >= 2 and percent of unique values <= 20%).
+
+```{r}
+(nzv <- nearZeroVar(full[, preds_factor], saveMetrics= TRUE))
 ```
 
 
-# EDA
+```{r}
+full %>% count(Sex)
+```
+
+# Bivariate Analysis
+
+In this section I will look at inter-variable relationships. For factor variables, I am interested in which levels have significantly different mean SalePrice values. For quantitative variables, I am looking for linear relationships with SalePrice and low correlations with each other.
+ 
+
+# Influential Outliers
+
+Now I’ll look at influential outliers. When building a predictive model, I only need to address influential outliers for variables that are likely to be important in the final model. I’ll identify the most likely important variables with a correlation matrix of the numerical predictors. For every variable with correlation >= 0.5 (a moderate correlation), I’ll check the variable distribution to see whether any influential outliers exist.
+
+```{r}
+predictors <- full %>% select(-PassengerId) %>% colnames()
+frm <- formula(Survived ~ .)
+
+```
+
+
+```{r cache=TRUE}
+mdl_mtrx <- model.matrix(frm, full[train_index, ])
+cor_out <- mdl_mtrx %>% data.frame() %>%
+  mutate(Survived = as.numeric(full[train_index, ]$Survived)) %>%
+  cor()
+cor_out_2 <- cor_out[, "Survived"] %>% abs() %>% sort(decreasing = TRUE)
+cor_out_2[2:6]
+```
 
 ```{r message=FALSE}
-d_raw_1 %>% 
-  select(-Name, -Ticket, -Cabin) %>%
-  ggpairs(mapping = aes(col = as.factor(Survived), alpha = 0.3), 
+full %>% 
+  ggpairs(mapping = aes(col = Survived, alpha = 0.3), 
                     lower = list(combo = wrap("facethist", bins = 20)))
 ```
 
 
-
-# Manage Data
-
-
-
-# Create Test and Train
 
 
 
@@ -80,7 +105,6 @@ d_raw_1 %>%
 # Save Work
 
 ```{r}
-save(d_raw_1, 
-     file = "./titanic_01.RData")
+#save(d_raw_1, file = "./titanic_02.RData")
 ```
 

@@ -19,7 +19,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 The [Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic) competition challenges participants to predict the survivorship (1 = survived, 0 = perished) of passengers aboard the April 1912 maiden voyage of the Titanic.  In total, 1,502 of the 2,224 passengers and crew perished (68%). The training (*n* = 891) and test (*n* = 418) data sets comprise only a fraction (59%) of the total. The data includes 10 features. Competitors build a predictive model with the training data set, then apply the model to the test data set to produce a submission file consisting of `PassengerId` and `Survived` (1|0).  Kaggle evaluates submissions on *accuracy*.
 
-This file handles the data management, EDA, and feature engineering.  I got a lot of ideas from [here](https://www.kaggle.com/mrisdal/exploring-survival-on-the-titanic).
+This file handles the data management and feature engineering.  I got a lot of ideas from [here](https://www.kaggle.com/mrisdal/exploring-survival-on-the-titanic).
 
 
 # Setup

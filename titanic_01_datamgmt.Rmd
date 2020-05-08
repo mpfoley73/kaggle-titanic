@@ -207,7 +207,7 @@ check_nzv <- function(dat, col) {
 full %>% check_nzv("Title")
 ```
 
-Only the first 3 have-non-zero variance.  "Master" nearly makes the cut.  The top 4 comprise 98% of the rows.  "Mlle" (mademoiselle) and "Ms" both mean "Miss".  "Mme" means "Mrs".  I'll merge these synonyms.  The rest can go into "Other".
+Only the first 3 have-non-zero variance.  "Master" nearly makes the cut.  The top 4 comprise 98% of the rows.  "Mlle" (mademoiselle) and "Ms" both mean "Miss".  "Mme" means "Mrs".  I'll merge these synonyms.  The remaining items will comprise a very small proportion of values, so even grouping them into "Other" will make the factor NZV.  I'll take some guesses for them.
 
 ```{r}
 full <- full %>%
@@ -216,10 +216,15 @@ full <- full %>%
       Title %in% c("Mlle", "Ms") ~ "Miss",
       Title == "Mme" ~ "Mrs",
       Title %in% c("Miss", "Mrs", "Mr", "Master") ~ Title,
-      TRUE ~ "Other"
+      Title %in% c("Dr", "Rev", "Major", "Col", "Capt") & Sex == "male" ~ "Mr",
+      Title %in% c("Dr") & Sex == "female" ~ "Mrs",
+      Title == "Lady" & Age >= 30 ~ "Mrs",
+      Title %in% c("Don", "Sir", "Jonkheer") ~ "Mr",
+      Title %in% c("the Countess", "Dona") ~ "Mrs",
+      TRUE ~ Title
     ),
     Title = parse_factor(Title)
-  )
+  ) 
 full %>% check_nzv("Title")
 ```
 
@@ -380,69 +385,43 @@ full$logFare <- log(full$Fare+.01)
 
 ## Family structure
 
-The number of siblings plus spouse on board, `SibSp`, and number of parents and children on board, `Parch` present interesting possibilities.  Does party size improve survival odds?  Would a husband and wife fair better with or without a child present?  
-
-### Family Size
+The number of siblings plus spouse on board, `SibSp`, and number of parents and children on board, `Parch` present interesting possibilities.  Does total family size improve survival odds? 
 
 ```{r fig.height=6.5}
+plot_surv_grp <- function(dat, x_grp, facet_grp){
+  dat %>%
+    count(!!sym(facet_grp), !!sym(x_grp), Survived) %>%
+    ungroup() %>% 
+    group_by(!!sym(facet_grp), !!sym(x_grp)) %>%
+    mutate(Pct = if_else(Survived == 1, n / sum(n), as.numeric(NA))) %>%
+    ggplot(aes(x = !!sym(x_grp), y = n, 
+               fill = as.factor(Survived), 
+               label = scales::percent(Pct))) + 
+    geom_col() +
+    geom_text(size = 3, na.rm = TRUE) +
+    scale_fill_brewer(palette = "Paired") +
+    theme(legend.position = "top") +
+    labs(
+      title = paste0("Survival Probability by ", facet_grp, " and ", x_grp),
+      fill = "Survived"
+    ) +
+    facet_wrap(vars(!!sym(facet_grp)), nrow = 3)
+}
 full[train_index, ] %>%
-  mutate(fam_size = SibSp + Parch + 1) %>%
-  count(Title, fam_size, Survived) %>%
-  ungroup() %>% 
-  group_by(Title, fam_size) %>%
-  mutate(Pct = if_else(Survived == 1, n / sum(n), as.numeric(NA))) %>%
-  ggplot(aes(x = fam_size, y = n, fill = as.factor(Survived), label = scales::percent(Pct))) + 
-  geom_col() +
-  geom_text(size = 3, na.rm = TRUE) +
-  scale_fill_brewer(palette = "Paired") +
-  scale_x_discrete(limits = c(1:11)) +
-  theme(legend.position = "top") +
-  labs(title = "Survival by Family Size", fill = "Survived") +
-  facet_wrap(~Title, nrow = 3)
+  mutate(fam_size = as.factor(SibSp + Parch + 1)) %>% plot_surv_grp("fam_size", "Title")
 ```
 
-I'll make family size a factor variable with bins 1, 2, and 3+
-
-```{r}
-full <- full %>%
-  mutate(Fsize = factor(if_else(SibSp + Parch + 1 >=3, 3, SibSp + Parch + 1)))
-```
-
-
-### Role (Mom, Dad, Son, etc.)
+In general, survival odds fall with increasing family size, although the n-size is pretty small for families over three.  Men buck the trend a little - their surivorship is relatively low when traveling alone.  I'll make family size a factor variable, `Fsize`, with bins 1, 2, and 3+.  For modeling, it probably makes sense to have an interaction variable for `Title*Fsize`.
 
 ```{r}
 full <- full %>%
   mutate(
-    Role = case_when(
-      Sex == "female" & Age > 50 & Parch >= 1 ~ "Grandmother",
-      Sex == "female" & Age >= 20 & Age <= 50 & Parch >= 1 ~ "Mother/Wife",
-      Sex == "female" & Age < 20 & Parch >= 1 ~ "Daughter",
-      Sex == "female" & Fsize == 2 ~ "Mother/Wife",
-      Sex == "male" & Age > 50 & Parch >= 1 ~ "Grandfather",
-      Sex == "male" & Age >= 20 & Age <= 50 & Parch >= 1 ~ "Father/Husb",
-      Sex == "male" & Age < 20 & Parch >= 1 ~ "Son",
-      Sex == "male" & Fsize == 2 ~ "Father/Husb",
-      Fsize == 3 ~ "Group",
-      TRUE ~ "Alone"
-    ),
-    Role = factor(Role)
+    Fsize = if_else(SibSp + Parch + 1 >=3, 3, SibSp + Parch + 1),
+    Fsize = factor(Fsize, levels = c(1, 2, 3), labels = c("1", "2", "gte3"))
   )
-```
 
-```{r}
 full[train_index, ] %>%
-  count(Role, Survived) %>%
-  ungroup() %>%
-  group_by(Role) %>%
-  mutate(Pct = if_else(Survived == 1, n / sum(n), as.numeric(NA))) %>%
-  ggplot(aes(x = Role, y = n, fill = Survived, label = scales::percent(Pct))) +
-  geom_col() +
-  scale_fill_brewer(palette = "Paired") +
-  geom_text() +
-  scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
-  theme_mf() +
-  theme(axis.text.x = element_text(size = 9))
+  plot_surv_grp("Fsize", "Title")
 ```
 
 

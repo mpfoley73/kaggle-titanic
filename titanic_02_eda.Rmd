@@ -44,10 +44,13 @@ glimpse(full)
 
 # Univariate Analysis
 
+## Factor Variables
+
 In this section I will look at data distributions (univariate analysis). For factor variables, I am interested in which have near-zero-variance. For quantitative variables, I am looking for significant skew.
 
 ```{r}
-preds_class <- full %>% select(-Survived, -PassengerId) %>% map(class) %>% unlist()
+preds <- full %>% select(-Survived, -PassengerId) %>% colnames()
+preds_class <- full[, preds] %>% map(class) %>% unlist()
 preds_factor <- subset(preds_class, preds_class == "factor") %>% names()
 preds_numeric <- subset(preds_class, preds_class == "numeric") %>% names()
 rm(preds_class)
@@ -57,14 +60,35 @@ assertthat::are_equal(length(c(preds_factor, preds_numeric)), ncol(full) - 2)
 
 I will inspect each factor variable, looking for near-zero-variance predictors. I won’t remove them here, but I might remove them in the modeling pre-process step if they cause zero-variance in cv folds (see discussion here). caret has a nice function nearZeroVar() to identify near-zero variance predictors. It defines near-zero variance as a frequency ratio (ratio of the most common value frequency to the second most common value frequency) >= 19 and a percent of unique values <= 10% (see caret package documentation). (DataCamp course Machine Learning Toolbox suggests more aggressive thresholds of frequency ratio >= 2 and percent of unique values <= 20%).
 
-```{r}
-(nzv <- nearZeroVar(full[, preds_factor], saveMetrics= TRUE))
+```{r warning=FALSE}
+dummies <- dummyVars(~., data = full)
+full_dummy <- as.data.frame(predict(dummies, full))
+(nzv <- full_dummy %>%
+    select(-PassengerId, -Survived.0, -Survived.1) %>%
+    nearZeroVar(saveMetrics= TRUE)
+)
+
+nzv %>%
+  data.frame() %>% rownames_to_column(var = "col") %>%
+  separate(col, sep = "\\.", into = c("col", "level"), ) %>%
+  filter(!is.na(level)) %>%
+  ggplot(aes(x = freqRatio, y = percentUnique, 
+             color = fct_rev(factor(nzv, labels = c("(okay)", "NZV"))), 
+             label = level)) +
+  geom_text(check_overlap = TRUE, size = 2, na.rm = TRUE) +
+  geom_point(size = 3, alpha = 0.6, na.rm = TRUE) +
+  geom_hline(yintercept = 10, linetype = "dashed") +
+  geom_vline(xintercept = 95/5, linetype = "dashed") +
+  theme(legend.position = "top") +
+  labs(title = "Near-Zero Variance of Factor Variables", color = "") +
+  facet_wrap(~col)
 ```
 
+Ideally, you want the vars to land in the top left quadrant. The only problematic predictor is `Title = "Master"`.  
 
-```{r}
-full %>% count(Sex)
-```
+## Quantitative Variables
+
+Skew can contribute to violation of linearity in linear regressions. I’ll check which variables have significant skew. Skew between 0.5 and 1.0 is generally considered moderate, and skew greater than 1 severe. In the following charts, the moderately skewed predictors are colored gold and the severely skewed predictors are colored red.
 
 # Bivariate Analysis
 
@@ -83,6 +107,10 @@ frm <- formula(Survived ~ .)
 
 
 ```{r cache=TRUE}
+dummies <- dummyVars(~., data = full)
+full_dummy <- as.data.frame(predict(dummies, full))
+
+
 mdl_mtrx <- model.matrix(frm, full[train_index, ])
 cor_out <- mdl_mtrx %>% data.frame() %>%
   mutate(Survived = as.numeric(full[train_index, ]$Survived)) %>%

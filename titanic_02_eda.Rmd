@@ -29,6 +29,7 @@ library(broom)  # for tidy()
 library(agricolae)  # for HSD.test()
 library(corrplot)
 library(GGally)
+library(gridExtra)
 ```
 
 
@@ -44,8 +45,6 @@ glimpse(full)
 
 # Univariate Analysis
 
-## Factor Variables
-
 In this section I will look at data distributions (univariate analysis). For factor variables, I am interested in which have near-zero-variance. For quantitative variables, I am looking for significant skew.
 
 ```{r}
@@ -58,7 +57,9 @@ rm(preds_class)
 assertthat::are_equal(length(c(preds_factor, preds_numeric)), ncol(full) - 2)
 ```
 
-I will inspect each factor variable, looking for near-zero-variance predictors. I won’t remove them here, but I might remove them in the modeling pre-process step if they cause zero-variance in cv folds (see discussion here). caret has a nice function nearZeroVar() to identify near-zero variance predictors. It defines near-zero variance as a frequency ratio (ratio of the most common value frequency to the second most common value frequency) >= 19 and a percent of unique values <= 10% (see caret package documentation). (DataCamp course Machine Learning Toolbox suggests more aggressive thresholds of frequency ratio >= 2 and percent of unique values <= 20%).
+## Factor Variables
+
+I will inspect each factor variable, looking for near-zero-variance predictors. I won’t remove them here, but I might remove them in the modeling pre-process step if they cause zero-variance in cv folds (see discussion here). `nearZeroVar()` defines near-zero variance as a frequency ratio (ratio of the most common value frequency to the second most common value frequency) >= 19 and a percent of unique values <= 10%. (DataCamp course Machine Learning Toolbox suggests more aggressive thresholds of frequency ratio >= 2 and percent of unique values <= 20%).
 
 ```{r warning=FALSE}
 dummies <- dummyVars(~., data = full)
@@ -89,6 +90,25 @@ Ideally, you want the vars to land in the top left quadrant. The only problemati
 ## Quantitative Variables
 
 Skew can contribute to violation of linearity in linear regressions. I’ll check which variables have significant skew. Skew between 0.5 and 1.0 is generally considered moderate, and skew greater than 1 severe. In the following charts, the moderately skewed predictors are colored gold and the severely skewed predictors are colored red.
+
+```{r message=FALSE}
+col_skew <- map(full[, preds_numeric], skewness) %>% unlist()
+col_skew_is_mod <- names(col_skew[abs(col_skew) > .5 & abs(col_skew) <= 1.0])
+col_skew_is_high <- names(col_skew[abs(col_skew) > 1.0])
+p <- map(
+  colnames(full[, preds_numeric]),
+  ~ ggplot(full, aes_string(x = .x)) +
+    geom_histogram(fill = case_when(.x %in% col_skew_is_mod ~ "goldenrod", 
+                                    .x %in% col_skew_is_high ~ "orangered4",
+                                    TRUE ~ "cadetblue")) +
+    labs(y = "", x = "", title = .x) +
+    theme(axis.text.y=element_blank(), plot.title = element_text(size = 10))
+)
+exec(grid.arrange, ncol = 2, !!!p)
+```
+
+
+
 
 # Bivariate Analysis
 

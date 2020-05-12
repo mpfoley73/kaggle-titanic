@@ -145,6 +145,15 @@ full %>%
                     lower = list(combo = wrap("facethist", bins = 20)))
 ```
 
+One last look at the decks.  Here are the survival rates.
+
+```{r}
+mosaicplot(data = full[train_index,], Deck ~ Survived, color = TRUE, main = NULL)
+```
+
+Not much difference between decks B-D.
+
+
 
 
 

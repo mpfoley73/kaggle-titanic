@@ -29,6 +29,7 @@ library(tidyverse)
 library(caret)
 library(mfstylr)
 library(mice)
+library(janitor)
 ```
 
 
@@ -60,9 +61,10 @@ train_index <- c(1:891)
 glimpse(full)
 ```
 
+
 # Feature Engineering
 
-At this point, I know the full data set is 1,309 x 12, including 10 feature columns.  How are we with data types and missingness?
+At this point, I know the full data set is 1,309 x 12, including 10 feature columns.  How are the data types and missingness?
 
 ```{r}
 skimr::skim(full)
@@ -79,9 +81,10 @@ full$Embarked <- factor(full$Embarked)
 
 `Cabin` is 77% null, `Age` is 20% null, and there are 2 nulls for `Embarked` and 1 for `Fare`.  I'll take care of NAs next.
 
+
 ## Fare -> Fare per Ticket
 
-`Fare` is the total price of the ticket, but there can be multiple passengers per ticket.  `Fare` is thus a multiple of the number of passengers on the ticket.  Let's untangle that by 1) creating a variable for number of passengers on the ticket, and 2) calculating the price per ticket.
+`Fare` is the price of the ticket, but there can be multiple passengers per ticket.  The per-person price is `Fare` divided number of passengers on the ticket.  Let's untangle that by 1) creating a variable `TicketN` for the number of passengers on the ticket, and 2) creating a variable `FarePerPass` for the per-passenger price.
 
 ### Passengers per Ticket
 
@@ -104,11 +107,14 @@ Define `FarePerPass` as `Fare` by `TicketN`.  First, however, I need to deal wit
 full %>% filter(is.na(Fare))
 ```
 
-`PassengerId` 1044 was a third-class traveler from Southampton traveling alone.  How much did passengers in this profile typically pay?
+`PassengerId` 1044 was a third-class traveler boarding at Southampton.  What is the typical fare per passenger for in this profile?
 
 ```{r}
-full %>% filter(Embarked == "S" & Pclass == 3) %>% 
-  mutate(FarePerPass = Fare / TicketN) %>% select(FarePerPass) %>% summary()
+full %>% 
+  filter(Embarked == "S" & Pclass == 3) %>% 
+  mutate(FarePerPass = Fare / TicketN) %>% 
+  select(FarePerPass) %>% 
+  summary()
 ```
 
 The median fare per passenger was $7.796. 
@@ -117,18 +123,33 @@ The median fare per passenger was $7.796.
 full[full$PassengerId == 1044, ]$Fare <- 7.796
 ```
 
-### Fare per Ticket
+
+### Fare per Passenger
 
 Calculate `FarePerPass` now.
 
 ```{r}
 full$FarePerPass <- full$Fare / full$TicketN
-
-full %>% ggplot(aes(x = FarePerPass, color = Pclass)) + geom_density() +
-  theme_minimal() + theme(legend.position = "top") +
-  labs(title = "FarePerPass Distribution")
 ```
 
+Let's see what the distribution of fares look like now.
+
+```{r}
+p1 <- full %>% ggplot(aes(x = FarePerPass, color = Pclass)) + geom_density() +
+  theme_minimal() + 
+  theme(legend.position = "top") +
+  scale_x_continuous(labels = scales::dollar) +
+  labs(title = "FarePerPass Distribution")
+p2 <- full %>% ggplot(aes(x = Pclass, y = FarePerPass, color = Pclass)) + 
+  geom_boxplot() + geom_jitter(alpha = 0.6) +
+  theme_minimal() + 
+  theme(legend.position = "top") + 
+  scale_y_continuous(labels = scales::dollar) +
+  labs(title = "FarePerPass Box Plot")
+gridExtra::grid.arrange(p1, p2, nrow = 1)
+```
+
+First class tickets can cost up to $125 per passenger!  Even more surprising is the tickets costing $0 per passenger.
 
 ## Fare
 
@@ -138,60 +159,62 @@ full %>% ggplot(aes(x = FarePerPass, color = Pclass)) + geom_density() +
 full %>% filter(Fare == 0) %>% arrange(Name)
 ```
 
-After a little research [here](https://www.encyclopedia-titanica.org/titanic-passenger-list/), it appears that [nine of the passengers](https://titanic.fandom.com/wiki/Guarantee_Group) who paid $0 were from the Guarantee Group from Harland & Wolff, the shipbuilding firm.  They were regarded as crew.  Of the others, [Reuchlin](https://www.encyclopedia-titanica.org/titanic-victim/johan-george-reuchlin.html) (PassengerId 823) was sort of an employee. So were [Fry, Harrison, and Ismay](https://www.encyclopedia-titanica.org/titanic-survivor/j-bruce-ismay.html) (816, 264, and 1264).  Perhaps the best way to deal with these passengers is to create a new employee variable, `Emp`, set their fare to `NA`, and impute a "market-rate" fare.
+After a little research [here](https://www.encyclopedia-titanica.org/titanic-passenger-list/), it appears that [nine of the passengers](https://titanic.fandom.com/wiki/Guarantee_Group) who paid $0 were from the Guarantee Group from Harland & Wolff, the shipbuilding firm.  They were regarded as crew.  Of the others, [Reuchlin](https://www.encyclopedia-titanica.org/titanic-victim/johan-george-reuchlin.html) (PassengerId 823) was sort of an employee. So were [Fry, Harrison, and Ismay](https://www.encyclopedia-titanica.org/titanic-survivor/j-bruce-ismay.html) (816, 264, and 1264).  Perhaps the best way to deal with these passengers is to create a new employee variable, `Employee` (1 = yes, 0 = no), set their `FarePerPass` to `NA`, and impute a "market-rate" fare.
 
 ```{r}
 full <- full %>% 
   mutate(
-    Emp = if_else(Fare == 0, 1, 0),
-    Fare = if_else(Fare == 0, as.numeric(NA), Fare)
+    Employee = if_else(Fare == 0, 1, 0),
+    FarePerPass = if_else(FarePerPass == 0, as.numeric(NA), FarePerPass)
   )
 ```
 
-I'll use Mice to impute.
+I'll use Mice to impute.  You might think the response variable `Survived` would be useful to include, but 1) it feels cicular to use it, and 2) it is often missing.  Anyway, I experimented with and without it, and leaving it out yielded more accurate imputations.
 
 ```{r}
 set.seed(2020)
 mice_obj <- mice(
-  full[, !names(full) %in% c("PassengerId", "Name", "Ticket", "Cabin")],
+  full[, !names(full) %in% c("PassengerId", "Name", "Ticket", "Cabin", "Survived")],
   method = "rf"
 )
 mice_cmpl <- complete(mice_obj)
 ```
 
 ```{r}
-data.frame(full = full$Fare, mice = mice_cmpl$Fare) %>%
+data.frame(full = full$FarePerPass, mice = mice_cmpl$FarePerPass) %>%
+  replace_na(list(full = 0)) %>%
   pivot_longer(cols = c("full", "mice"), names_to = "Data", values_to= "Fare") %>%
   ggplot(aes(x = Fare, color = Data)) + 
   geom_density(na.rm = TRUE) +
-  theme_minimal() +
+  theme_minimal() + 
+  scale_x_continuous(labels = scales::dollar) +
+  theme(legend.position = "top") +
   labs(title = "Fare Distribution", color = "")
 ```
 
-Those 17 fit in invisibly.
+Those 17 fit in invisibly.  Assign the imputed values.  Recalculate `Fare` too.
 
 ```{r}
-full$Fare <- mice_cmpl$Fare
-full$FarePerPass <- full$Fare / full$TicketN
+full$FarePerPass <- mice_cmpl$FarePerPass
+full$Fare <- full$FarePerPass * full$TicketN
 ```
 
-How do survival chances relate to `FarePerPass`?
+One more look at `FarePerPass`.
 
 ```{r}
-full[train_index, ] %>%
-  mutate(bin = cut(FarePerPass, breaks = 10)) %>%
-  count(bin, Sex, Survived) %>%
-  ungroup() %>%
-  group_by(bin, Sex) %>%
-  mutate(Pct = if_else(Survived == 1, n / sum(n), as.numeric(NA))) %>%
-  ggplot(aes(x = bin, y = n, fill = Survived, label = scales::percent(Pct, accuracy = 1))) +
-  geom_col(position = position_stack()) +
-  geom_text() +
-  scale_fill_brewer(palette = "Paired") +
-  labs(title = "Survivorshp by Fare", x = "Fare") +
-  facet_wrap(~ Sex, nrow = 2)
+p1 <- full %>% ggplot(aes(x = FarePerPass, color = Pclass)) + geom_density() +
+  theme_minimal() + 
+  theme(legend.position = "top") +
+  scale_x_continuous(labels = scales::dollar) +
+  labs(title = "FarePerPass Distribution")
+p2 <- full %>% ggplot(aes(x = Pclass, y = FarePerPass, color = Pclass)) + 
+  geom_boxplot() + geom_jitter(alpha = 0.6) +
+  theme_minimal() + 
+  theme(legend.position = "top") + 
+  scale_y_continuous(labels = scales::dollar) +
+  labs(title = "FarePerPass Box Plot")
+gridExtra::grid.arrange(p1, p2, nrow = 1)
 ```
-
 
 
 ## Impute NA: Embarked
@@ -202,13 +225,13 @@ Passengers `Embarked` from three ports (C = Cherbourg, Q = Queenstown, S = South
 full %>% filter(is.na(Embarked))
 ```
 
-They traveled on the same ticket, so probably embarked from the same port.  One way to impute is to profile passengers by port and see which profile they fit best.  I'll profile by passenger class and fare.  These passengers traveled first class and paid $80 for their tickets.
+They traveled on the same ticket, so they probably embarked from the same port.  They paid $40 per passenger.  Where did other passengers fitting this profile embark?
 
 ```{r}
 plot_prof <- function(hline, subtitle){
   full %>%
     filter(!is.na(Embarked)) %>%
-    ggplot(aes(x = Embarked, y = Fare, color = Pclass)) + 
+    ggplot(aes(x = Embarked, y = FarePerPass, color = Pclass)) + 
     geom_boxplot(na.rm = TRUE) +
     geom_hline(yintercept = hline, linetype = 2) +
     scale_y_continuous(labels = scales::dollar) +
@@ -220,17 +243,16 @@ plot_prof <- function(hline, subtitle){
       subtitle = subtitle
     )
 }
-plot_prof(80, "First Class passengers paying $80/ticket probably embarked from Cherbourg")
+plot_prof(40, "First Class passengers paying $80/ticket probably embarked from Cherbourg")
 ```
 
-Seems like port Cherbourg is a good guess, but it could be any of them.  What does `mice()` say?
+Seems like port Cherbourg is a good guess, but it could be any of them.  What did `mice()` predict?
 
 ```{r}
-
 mice_cmpl[c(62, 830), ] %>% select(Embarked, everything())
 ```
 
-`mice()` thinks Southampton!  Okay, Southampton it is.
+`mice()` thinks Chebourg too.
 
 ```{r}
 full$Embarked <- mice_cmpl$Embarked
@@ -325,7 +347,19 @@ I will asssume the *first* listed cabin contains the deck number.
 
 ```{r}
 full$Deck <- map_chr(full$Cabin, str_sub, start = 1, end = 1) %>% factor()
-addmargins(table(full$Deck, full$Pclass, useNA = "ifany"))
+```
+
+Here is the distribution of values, grouped by passenger class.
+
+```{r}
+full %>%
+  tabyl(Deck, Pclass) %>% 
+  adorn_totals(c("row", "col")) %>%
+  adorn_percentages("col") %>%
+  adorn_pct_formatting() %>%
+  adorn_ns() %>%
+  adorn_title("combined") %>%
+  knitr::kable()
 ```
 
 There are 8 decks listed. One fellow seems to have been assigned to the tank top, meaning he's sleeping with the ship boilers.  
@@ -334,43 +368,21 @@ There are 8 decks listed. One fellow seems to have been assigned to the tank top
 full %>% filter(Deck == "T")
 ```
 
-First class passenger too - that seems wrong.  What else... The decks are labeled in descending level above water, so the highest deck is "A" and it would have been the most exclusive.  Let's verify that.
+First class passenger too - that seems wrong.  What else... The decks are labeled in descending level above water, so the highest deck is "A" and it would have been the most exclusive.  That is evident from the table above - decks A, B, and C are 100% first class.  Lots of missing values though.  Seems like a good guess that the third-class passengers are on deck F or G.  How about average ticket fare by deck?
 
 ```{r}
-full %>% count(Deck, Pclass) %>%
-  ggplot(aes(x = Deck, y = n, fill = fct_rev(as.factor(Pclass)))) + geom_col() +
-  scale_fill_brewer(palette = "Paired") +
+full %>% 
+  ggplot(aes(x = fct_explicit_na(Deck), y = FarePerPass, 
+             color = as.factor(Pclass))) +
+  geom_boxplot() +
+  scale_color_brewer(palette = "Paired") +
   theme_minimal() +
+  scale_y_continuous(labels = scales::dollar) +
   theme(legend.position = "top") +
-  labs(title = "Passengers by Deck", fill = "Class")
+  labs(title = "FarePerPass by Deck", color = "Class", x = "Deck", y = "Fare per Passenger")
 ```
 
-Decks A-C are all first-class passengers, D has a few second-class, etc.  Makes sense (except for our first class passenger sleeping with the ship boilers).  Lots of nulls.  Seems like a good guess that the third-class passengers are on deck F or G.  How about average ticket fare by deck?
-
-```{r}
-full %>% group_by(Deck, Pclass) %>% 
-  summarize(n = n(), mean_fare = mean(Fare, na.rm = TRUE)) %>%
-  ggplot(aes(x = Deck, y = mean_fare, color = fct_rev(as.factor(Pclass)), size = n)) +
-  geom_jitter() +
-  scale_fill_brewer(palette = "Paired") +
-  theme_minimal() +
-  theme(legend.position = "top") +
-  labs(title = "Mean Ticket Price by Deck", color = "Class")
-```
-
-Looks like deck A was pretty good value.  I better look into that more closely.
-
-```{r}
-full %>% filter(Deck == "A") %>% select(-Survived, -Surname, -Name, -Ticket, -Cabin)
-```
-
-Nothing unusual, except that Passenger ID 807's fair was $0.  Anyone else with $0 fare?
-
-```{r}
-full %>% filter(Fare == 0)
-```
-
-Okay, so what am I going to do with this columnn?  First, I'll un-assign the deck from Mr. Tank Top since that just seems wrong, and I can't have a factor variable level with one row.  Then I'll let mice impute the NAs.  After that, I'll decide if I should collapse factors F and G since G was pretty sparse. Also, I think the $0 fare is interesting, so I'm going to look into that too.
+Okay, so what am I going to do with `Deck`?  First, I'll un-assign the deck from Mr. Tank Top since that just seems wrong, and I can't have a factor variable level with one row.  Then I'll let mice impute the NAs.  After that, I'll decide if I should collapse factors F and G since G was pretty sparse. 
 
 ```{r}
 full[340, ]$Deck <- NA
@@ -378,7 +390,7 @@ full$Deck = fct_drop(full$Deck)
 
 set.seed(2020)
 mice_obj <- mice(
-  full[, !names(full) %in% c("PassengerId", "Name", "Ticket", "Cabin")],
+  full[, !names(full) %in% c("PassengerId", "Name", "Ticket", "Cabin", "Survived")],
   method = "rf"
 )
 mice_cmpl <- complete(mice_obj)
@@ -388,52 +400,47 @@ mice_cmpl <- complete(mice_obj)
 addmargins(table(mice_cmpl$Deck, mice_cmpl$Pclass, useNA = "ifany"))
 ```
 
+```{r}
+mice_cmpl %>%
+  tabyl(Deck, Pclass) %>% 
+  adorn_totals(c("row", "col")) %>%
+  adorn_percentages("col") %>%
+  adorn_pct_formatting() %>%
+  adorn_ns() %>%
+  adorn_title("combined") %>%
+  knitr::kable()
+```
+
 Deck G is still sparse, so let's go ahead and collapse the level into F.
 
 ```{r}
 full$Deck <- mice_cmpl$Deck
 full$Deck <- fct_collapse(full$Deck, F = "G")
-addmargins(table(full$Deck, full$Pclass, useNA = "ifany"))
 ```
 
 Oh, where did Mr. Tank Top go?
 
 ```{r}
-full %>% filter(PassengerId == 340)
+full %>% filter(PassengerId == 340) %>% select(Deck, everything())
 ```
 
-Deck B!  I feel better about that assignment.  One last look at the decks.  Here are the survival rates.
-
-```{r}
-mosaicplot(data = full[train_index,], Deck ~ Survived, color = TRUE, main = NULL)
-```
-
-Not much difference between decks B-D.
+Deck B!  
 
 
 ## Family structure
 
-The number of siblings plus spouse on board, `SibSp`, and number of parents and children on board, `Parch` present interesting possibilities.  Does total family size improve survival odds? 
+The number of siblings plus spouse on board, `SibSp`, and number of parents and children on board, `Parch` present interesting possibilities.  Does *total* family size improve survival odds? 
 
-```{r fig.height=6.5}
+```{r}
 plot_surv_grp <- function(dat, x_grp, facet_grp){
   dat %>%
-    count(!!sym(facet_grp), !!sym(x_grp), Survived) %>%
-    ungroup() %>% 
-    group_by(!!sym(facet_grp), !!sym(x_grp)) %>%
-    mutate(Pct = if_else(Survived == 1, n / sum(n), as.numeric(NA))) %>%
-    ggplot(aes(x = !!sym(x_grp), y = n, 
-               fill = as.factor(Survived), 
-               label = scales::percent(Pct))) + 
-    geom_col() +
-    geom_text(size = 3, na.rm = TRUE) +
-    scale_fill_brewer(palette = "Paired") +
-    theme(legend.position = "top") +
-    labs(
-      title = paste0("Survival Probability by ", facet_grp, " and ", x_grp),
-      fill = "Survived"
-    ) +
-    facet_wrap(vars(!!sym(facet_grp)), nrow = 3)
+  group_by(!!sym(facet_grp), !!sym(x_grp)) %>%
+  summarize(n = n(), pct_surv = sum(if_else(Survived == "1", 1, 0)) / n()) %>%
+  ggplot(aes(x = !!sym(x_grp), y = pct_surv, fill = n)) + 
+  geom_col(position = position_dodge()) +
+  scale_fill_steps(low = "goldenrod1", high = "goldenrod4") +
+  scale_y_continuous(labels = scales::percent) +
+  facet_wrap(~ Title)
 }
 full[train_index, ] %>%
   mutate(fam_size = as.factor(SibSp + Parch + 1)) %>% plot_surv_grp("fam_size", "Title")
@@ -453,7 +460,24 @@ full[train_index, ] %>%
 ```
 
 
-## Remove Vars
+## Net Survivors
+
+Is the survivorship of the other passengers on the ticket predictive of your survivorship?  Create feature `TicketSurvN`.
+
+```{r}
+full <- full %>%
+  group_by(Ticket) %>%
+  mutate(TicketNetSurv = sum(Survived == "1", na.rm = TRUE) - sum(Survived == "0", na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(
+    TicketNetSurvOth = TicketNetSurv + case_when(Survived == "1" ~ -1,
+                                                 Survived == "0" ~ +1,
+                                                 is.na(Survived) ~ 0)
+  )
+```
+
+
+# Remove Unnecesary Vars
 
 The text fields are the chaffe, so discard them.
 

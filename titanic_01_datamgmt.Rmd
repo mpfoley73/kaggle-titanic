@@ -79,7 +79,7 @@ full$Sex <- factor(full$Sex)
 full$Embarked <- factor(full$Embarked)
 ```
 
-`Cabin` is 77% null, `Age` is 20% null, and there are 2 nulls for `Embarked` and 1 for `Fare`.  I'll take care of NAs next.
+`Cabin` is 77% null, `Age` is 20% null, and there are 2 nulls for `Embarked` and 1 for `Fare`.
 
 
 ## Fare -> Fare per Ticket
@@ -101,7 +101,7 @@ full %>% ggplot(aes(x = TicketN)) + geom_histogram(bins = 30) +
 
 ### Impute NA: Fare
 
-Define `FarePerPass` as `Fare` by `TicketN`.  First, however, I need to deal with the passenger ticket with missing `Fare`.  
+Define `FarePerPass` as `Fare` divided by `TicketN`.  First, however, I need to deal with the passenger ticket with missing `Fare`.  
 
 ```{r}
 full %>% filter(is.na(Fare))
@@ -132,7 +132,7 @@ Calculate `FarePerPass` now.
 full$FarePerPass <- full$Fare / full$TicketN
 ```
 
-Let's see what the distribution of fares look like now.
+Let's see what the distribution of fares look like.
 
 ```{r}
 p1 <- full %>% ggplot(aes(x = FarePerPass, color = Pclass)) + geom_density() +
@@ -164,7 +164,7 @@ After a little research [here](https://www.encyclopedia-titanica.org/titanic-pas
 ```{r}
 full <- full %>% 
   mutate(
-    Employee = if_else(Fare == 0, 1, 0),
+    Employee = factor(if_else(Fare == 0, 1, 0)),
     FarePerPass = if_else(FarePerPass == 0, as.numeric(NA), FarePerPass)
   )
 ```
@@ -261,7 +261,7 @@ full$Embarked <- mice_cmpl$Embarked
 
 ## Impute NA: Age
 
-20% of passengers have no listed `Age`.  I have no good ideas for imputation, so I'll just go with mice.
+20% of `Age` values are missing.  I have no good ideas for imputation, so I'll just go with mice.
 
 ```{r}
 data.frame(full = full$Age, mice = mice_cmpl$Age) %>%
@@ -281,7 +281,7 @@ full$Age <- mice_cmpl$Age
 
 ## Name -> Surname, Title, Name
 
-`Name` includes a title and surname.  The title may be predictive of survivorship.  The surname may be useful for constructing family units (do families sink or swim together?), but I'm not sure how to go about doing that, so I'll focus on title.  I learned from other analyses, and supported by [Encycolpedia Titanica](https://www.encyclopedia-titanica.org/titanic-deckplans/), that the first letter of the cabin refers to the deck.  I'll parse these two fields first.
+`Name` includes a title and surname.  The title may be predictive of survivorship.  The surname may be useful for constructing family units (do families sink or swim together?), but I'm not sure how to go about doing that, so I'll focus on title.  
 
 Separate `Name` into `Surname`, `Title`, `Name`.
 
@@ -337,7 +337,7 @@ n_distinct(full$Surname)
 
 ## Cabin -> Deck
 
-`Cabin` contains both the deck [A-G, T] (T = Tank Top?) and cabin number (deck descriptions [here](https://jamescameronstitanic.fandom.com/wiki/Titanic_Decks)).  There are a few rows with multiple cabins, and in a few of these instances the multiple cabins are on multiple decks.  
+`Cabin` contains both the deck [A-G, T] (T = Tank Top?) and cabin number (deck descriptions [here](https://jamescameronstitanic.fandom.com/wiki/Titanic_Decks)).  There are a few rows with multiple cabins, and in a few of these instances the multiple cabins are on multiple decks. 
 
 ```{r}
 unique(full$Cabin)
@@ -427,8 +427,9 @@ full %>% filter(PassengerId == 340) %>% select(Deck, everything())
 Deck B!  
 
 
-## Family structure
+## Strength in Numbers?
 
+### Family Size
 The number of siblings plus spouse on board, `SibSp`, and number of parents and children on board, `Parch` present interesting possibilities.  Does *total* family size improve survival odds? 
 
 ```{r}
@@ -436,27 +437,53 @@ plot_surv_grp <- function(dat, x_grp, facet_grp){
   dat %>%
   group_by(!!sym(facet_grp), !!sym(x_grp)) %>%
   summarize(n = n(), pct_surv = sum(if_else(Survived == "1", 1, 0)) / n()) %>%
-  ggplot(aes(x = !!sym(x_grp), y = pct_surv, fill = n)) + 
-  geom_col(position = position_dodge()) +
-  scale_fill_steps(low = "goldenrod1", high = "goldenrod4") +
-  scale_y_continuous(labels = scales::percent) +
+  mutate(logodds = round(pct_surv / (1 - pct_surv), 1)) %>%
+  ggplot(aes(x = !!sym(x_grp), y = logodds, color = n, label = logodds)) + 
+  geom_point() +
+  geom_text(size = 3, position = position_nudge(y = -1)) +
+  scale_color_steps(low = "goldenrod1", high = "goldenrod4") +
+  scale_y_continuous(labels = scales::number) +
+  labs(
+    title = "Survival Odds", 
+    subtitle = paste0("by ", x_grp, " and ", facet_grp), 
+    y = ""
+  ) +
   facet_wrap(~ Title)
 }
 full[train_index, ] %>%
   mutate(fam_size = as.factor(SibSp + Parch + 1)) %>% plot_surv_grp("fam_size", "Title")
 ```
 
-In general, survival odds fall with increasing family size, although the n-size is pretty small for families over three.  Men buck the trend a little - their surivorship is relatively low when traveling alone.  I'll make family size a factor variable, `Fsize`, with bins 1, 2, and 3+.  For modeling, it probably makes sense to have an interaction variable for `Title*Fsize`.
+In general, survival odds fall with increasing family size, although the n-size is pretty small for families over three.  Men buck the trend a little - their surivorship is relatively low when traveling alone.  I'll make family size a factor variable, `FamSize`, with bins 1, 2, and 3+.  For modeling, it probably makes sense to have an interaction variable for `Title*Fsize`.
 
 ```{r}
 full <- full %>%
   mutate(
-    Fsize = if_else(SibSp + Parch + 1 >=3, 3, SibSp + Parch + 1),
-    Fsize = factor(Fsize, levels = c(1, 2, 3), labels = c("1", "2", "gte3"))
+    FamSize = if_else(SibSp + Parch + 1 >=3, 3, SibSp + Parch + 1),
+    FamSize = factor(FamSize, levels = c(1, 2, 3), labels = c("1", "2", "gte3"))
   )
 
-full[train_index, ] %>%
-  plot_surv_grp("Fsize", "Title")
+full[train_index, ] %>% plot_surv_grp("FamSize", "Title")
+```
+
+### Ticket Size
+
+Is there a similar effect for the number of people in the party?
+
+```{r}
+full[train_index, ] %>% plot_surv_grp("TicketN", "Title")
+```
+
+In general, survival increase until party size of 4fall with increasing family size, although the n-size is pretty small for families over three.  Men buck the trend a little - their surivorship is relatively low when traveling alone.  I'll make family size a factor variable, `Fsize`, with bins 1, 2, and 3+.  For modeling, it probably makes sense to have an interaction variable for `Title*Fsize`.
+
+```{r}
+full <- full %>% 
+  mutate(
+    TktSize = if_else(TicketN >= 4L, 4L, TicketN),
+    TktSize = factor(TktSize, levels = c(1, 2, 3, 4), labels = c("1", "2", "3", "gte4"))
+  )
+
+full[train_index, ] %>% plot_surv_grp("TktSize", "Title")
 ```
 
 
@@ -467,33 +494,59 @@ Is the survivorship of the other passengers on the ticket predictive of your sur
 ```{r}
 full <- full %>%
   group_by(Ticket) %>%
-  mutate(TicketNetSurv = sum(Survived == "1", na.rm = TRUE) - sum(Survived == "0", na.rm = TRUE)) %>%
+  mutate(
+    SurvN = sum(Survived == "1", na.rm = TRUE),
+    PrshN = sum(Survived == "0", na.rm = TRUE)
+  ) %>% 
   ungroup() %>%
   mutate(
-    TicketNetSurvOth = TicketNetSurv + case_when(Survived == "1" ~ -1,
-                                                 Survived == "0" ~ +1,
-                                                 is.na(Survived) ~ 0)
-  )
+    SurvN = SurvN - if_else(!is.na(Survived) & Survived == "1", 1, 0),
+    PrshN = PrshN - if_else(!is.na(Survived) & Survived == "0", 1, 0),
+    NetSurv = SurvN - PrshN,
+  ) %>%
+  select(-SurvN, -PrshN)
 ```
 
+```{r warning=FALSE, message=FALSE}
+plot_net_surv <- function() {
+  full[train_index, ] %>%
+    group_by(NetSurv, Sex) %>%
+    summarize(
+      n = n(), 
+      log_odds = log(mean(Survived == "1") / (1 - mean(Survived == "1")))
+    ) %>%
+    ggplot(aes(x = NetSurv, y = log_odds, color = Sex)) +
+    geom_point(aes(size = n)) +
+    geom_smooth(se = FALSE, method = "lm") +
+    theme_minimal() +
+    scale_color_brewer(palette = "Paired") +
+    theme(legend.position = "top") +
+    labs(title = "Survival log-odds if Others Survive", color = "")
+}
+plot_net_surv()
+```
 
-# Remove Unnecesary Vars
-
-The text fields are the chaffe, so discard them.
+It certainly does appear to be predictive.  The tails are thinly populated and the linearity breaks down.  I can probably collapse the tails.
 
 ```{r}
-full <- full %>% 
-  select(-Surname, -Name, -Ticket, -Cabin, -Fare) %>%
-  select(PassengerId, Survived, sort(names(.))) 
+full[train_index, ] %>% group_by(NetSurv) %>% summarize(n = n(), mean = mean(Survived == 1))
 ```
+
+I'll collapse bins [-6, -1] and [1, 3].
+
+```{r}
+full$NetSurv <- map_dbl(full$NetSurv, max, -1)
+full$NetSurv <- map_dbl(full$NetSurv, min, 1)
+plot_net_surv()
+```
+
+# Save Work
 
 One final look.
 
 ```{r}
 skimr::skim(full)
 ```
-
-# Save Work
 
 ```{r}
 save(full, train_index, file = "./titanic_01.RData")

@@ -45,27 +45,29 @@ glimpse(full)
 
 # Univariate Analysis
 
-In this section I will look at data distributions (univariate analysis). For factor variables, I am interested in which have near-zero-variance. For quantitative variables, I am looking for significant skew.
+In this section I will look at data distributions (univariate analysis). For factor variables, I am interested in which have near-zero-variance. For quantitative variables, I am looking for significant skew. Classify the predictors by data type.
 
 ```{r}
-preds <- full %>% select(-Survived, -PassengerId) %>% colnames()
+preds <- full %>% 
+  select(-Survived, -PassengerId, -Surname, -Name, -Ticket, -Cabin) %>% 
+  colnames()
 preds_class <- full[, preds] %>% map(class) %>% unlist()
 preds_factor <- subset(preds_class, preds_class == "factor") %>% names()
-preds_numeric <- subset(preds_class, preds_class == "numeric") %>% names()
+preds_numeric <- subset(preds_class, preds_class %in% c("numeric", "integer")) %>% names()
+mdl_vars <- c("Survived", preds)
 rm(preds_class)
 
-assertthat::are_equal(length(c(preds_factor, preds_numeric)), ncol(full) - 2)
+assertthat::are_equal(length(c(preds_factor, preds_numeric)), length(preds))
 ```
 
 ## Factor Variables
 
-I will inspect each factor variable, looking for near-zero-variance predictors. I won’t remove them here, but I might remove them in the modeling pre-process step if they cause zero-variance in cv folds (see discussion here). `nearZeroVar()` defines near-zero variance as a frequency ratio (ratio of the most common value frequency to the second most common value frequency) >= 19 and a percent of unique values <= 10%. (DataCamp course Machine Learning Toolbox suggests more aggressive thresholds of frequency ratio >= 2 and percent of unique values <= 20%).
+Inspect each factor variable, looking for near-zero-variance predictors. I won’t remove them here, but I might remove them in the modeling pre-process step if they cause zero-variance in cv folds. `nearZeroVar()` defines near-zero variance as a frequency ratio (ratio of the most common value frequency to the second most common value frequency) >= 19 and a percent of unique values <= 10%. (DataCamp course Machine Learning Toolbox suggests more aggressive thresholds of frequency ratio >= 2 and percent of unique values <= 20%).
 
 ```{r warning=FALSE}
-dummies <- dummyVars(~., data = full)
-full_dummy <- as.data.frame(predict(dummies, full))
-(nzv <- full_dummy %>%
-    select(-PassengerId, -Survived.0, -Survived.1) %>%
+dummies <- dummyVars(~., data = full[, preds_factor], fullRank = FALSE)
+dummy_dat <- as.data.frame(predict(dummies, full[, preds_factor]))
+(nzv <- dummy_dat %>%
     nearZeroVar(saveMetrics= TRUE)
 )
 
@@ -83,13 +85,15 @@ nzv %>%
   theme(legend.position = "top") +
   labs(title = "Near-Zero Variance of Factor Variables", color = "") +
   facet_wrap(~col)
+
+rm(dummies, dummy_dat, nzv)
 ```
 
-Ideally, you want the vars to land in the top left quadrant. The only problematic predictor is `Title = "Master"`.  
+Ideally, you want the vars to land in the top left quadrant. The problematic predictors are `Title = "Master"`, `Employee`, and `Deck = "A"`.  
 
 ## Quantitative Variables
 
-Skew can contribute to violation of linearity in linear regressions. I’ll check which variables have significant skew. Skew between 0.5 and 1.0 is generally considered moderate, and skew greater than 1 severe. In the following charts, the moderately skewed predictors are colored gold and the severely skewed predictors are colored red.
+Skew can contribute to violation of linearity in linear regressions. I’ll check which variables have significant skew. Skew between 0.5 and 1.0 is generally considered moderate, and skew greater than 1 severe. In the following charts, neglibibly skewed predictors are colored theil, moderately skewed predictors are colored gold and the severely skewed predictors are colored red.
 
 ```{r message=FALSE}
 col_skew <- map(full[, preds_numeric], skewness) %>% unlist()
@@ -105,50 +109,51 @@ p <- map(
     theme(axis.text.y=element_blank(), plot.title = element_text(size = 10))
 )
 exec(grid.arrange, ncol = 2, !!!p)
+
+rm(col_skew, col_skew_is_high, col_skew_is_mod)
 ```
-
-
 
 
 # Bivariate Analysis
 
 In this section I will look at inter-variable relationships. For factor variables, I am interested in which levels have significantly different mean SalePrice values. For quantitative variables, I am looking for linear relationships with SalePrice and low correlations with each other.
+
+```{r cache=TRUE}
+dummies_fullrank <- dummyVars(~., data = full[, mdl_vars], fullRank = TRUE)
+full_dum <- as.data.frame(predict(dummies_fullrank, full[, mdl_vars]))
+
+cor_out <- full_dum[train_index, ] %>% cor()
+cor_out[, "Survived.1"] %>% abs() %>% sort(decreasing = TRUE) %>% head(11)
+```
  
+```{r message=FALSE}
+plot_ggpairs <- function(cols) {
+full[train_index, ] %>% 
+  ggpairs(
+    mapping = aes(col = Survived), 
+    columns = cols,
+    legend = c(1,1),
+    lower = list(combo = wrap("facethist", bins = 20))
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom") 
+}
+for(i in 1:4) {
+  print(plot_ggpairs(preds[(1:3) + 3*i]))
+}
+```
 
 # Influential Outliers
 
 Now I’ll look at influential outliers. When building a predictive model, I only need to address influential outliers for variables that are likely to be important in the final model. I’ll identify the most likely important variables with a correlation matrix of the numerical predictors. For every variable with correlation >= 0.5 (a moderate correlation), I’ll check the variable distribution to see whether any influential outliers exist.
 
-```{r}
-predictors <- full %>% select(-PassengerId) %>% colnames()
-frm <- formula(Survived ~ .)
-
-```
 
 
-```{r cache=TRUE}
-dummies <- dummyVars(~., data = full)
-full_dummy <- as.data.frame(predict(dummies, full))
-
-
-mdl_mtrx <- model.matrix(frm, full[train_index, ])
-cor_out <- mdl_mtrx %>% data.frame() %>%
-  mutate(Survived = as.numeric(full[train_index, ]$Survived)) %>%
-  cor()
-cor_out_2 <- cor_out[, "Survived"] %>% abs() %>% sort(decreasing = TRUE)
-cor_out_2[2:6]
-```
-
-```{r message=FALSE}
-full %>% 
-  ggpairs(mapping = aes(col = Survived, alpha = 0.3), 
-                    lower = list(combo = wrap("facethist", bins = 20)))
-```
 
 One last look at the decks.  Here are the survival rates.
 
 ```{r}
-mosaicplot(data = full[train_index,], Deck ~ Survived, color = TRUE, main = NULL)
+#mosaicplot(data = full[train_index,], Deck ~ Survived, color = TRUE, main = NULL)
 ```
 
 Not much difference between decks B-D.

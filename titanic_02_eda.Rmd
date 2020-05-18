@@ -17,7 +17,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 
-This is a survey of the Titanic data.  The univariate analysis characterizes the predictor distributions.  The bivariate analysis characterizes relationships among the predictors.  The influential outliers analysis searches for problematic observations.
+This is a survey of the Titanic data.  The univariate analysis characterizes the predictor distributions.  The bivariate analysis characterizes relationships among the predictors and with the response variable.  The influential outliers analysis searches for problematic observations.
 
 # Setup
 
@@ -26,10 +26,8 @@ library(tidyverse)
 library(caret)  # for nearZeroVar()
 library(e1071)  # for skewness()
 library(broom)  # for tidy()
-library(agricolae)  # for HSD.test()
-library(corrplot)
-library(GGally)
-library(gridExtra)
+library(GGally) # for ggpairs()
+library(gridExtra) 
 ```
 
 
@@ -45,11 +43,13 @@ glimpse(full)
 
 # Univariate Analysis
 
-In this section I will look at data distributions (univariate analysis). For factor variables, I am interested in which have near-zero-variance. For quantitative variables, I am looking for significant skew. Classify the predictors by data type.
+In this section I will look at data distributions. For factor variables, I am interested in which have near-zero-variance. For quantitative variables, I am looking for significant skew. 
+
+It will be handy to classify the predictors by data type.
 
 ```{r}
 preds <- full %>% 
-  select(-Survived, -PassengerId, -Surname, -Name, -Ticket, -Cabin) %>% 
+  select(-Survived, -PassengerId, -Surname, -Name, -Ticket, -Cabin, -Fare) %>% 
   colnames()
 preds_class <- full[, preds] %>% map(class) %>% unlist()
 preds_factor <- subset(preds_class, preds_class == "factor") %>% names()
@@ -62,7 +62,7 @@ assertthat::are_equal(length(c(preds_factor, preds_numeric)), length(preds))
 
 ## Factor Variables
 
-Inspect each factor variable, looking for near-zero-variance predictors. I won’t remove them here, but I might remove them in the modeling pre-process step if they cause zero-variance in cv folds. `nearZeroVar()` defines near-zero variance as a frequency ratio (ratio of the most common value frequency to the second most common value frequency) >= 19 and a percent of unique values <= 10%. (DataCamp course Machine Learning Toolbox suggests more aggressive thresholds of frequency ratio >= 2 and percent of unique values <= 20%).
+Inspect each factor variable, looking for near-zero-variance (NZV). I might remove them in the modeling pre-process step to prevent zero-variance in cv folds. `caret::nearZeroVar()` defines NZV as a frequency ratio of the most common value to the second most common value frequency >= 19/5 and a unique value percentage <= 10%. (*DataCamp course Machine Learning Toolbox suggests more aggressive thresholds of frequency ratio >= 2 and unique value percentage <= 20%*).
 
 ```{r warning=FALSE}
 dummies <- dummyVars(~., data = full[, preds_factor], fullRank = FALSE)
@@ -70,7 +70,13 @@ dummy_dat <- as.data.frame(predict(dummies, full[, preds_factor]))
 (nzv <- dummy_dat %>%
     nearZeroVar(saveMetrics= TRUE)
 )
+```
 
+The problematic predictors are `Title = "Master"`, `Employee`, and `Deck = "A"`. 
+
+Here is a visualization of the data. Ideally, you want the vars to land in the top left quadrant.  
+
+```{r}
 nzv %>%
   data.frame() %>% rownames_to_column(var = "col") %>%
   separate(col, sep = "\\.", into = c("col", "level"), ) %>%
@@ -89,7 +95,6 @@ nzv %>%
 rm(dummies, dummy_dat, nzv)
 ```
 
-Ideally, you want the vars to land in the top left quadrant. The problematic predictors are `Title = "Master"`, `Employee`, and `Deck = "A"`.  
 
 ## Quantitative Variables
 
@@ -116,7 +121,7 @@ rm(col_skew, col_skew_is_high, col_skew_is_mod)
 
 # Bivariate Analysis
 
-In this section I will look at inter-variable relationships. For factor variables, I am interested in which levels have significantly different mean SalePrice values. For quantitative variables, I am looking for linear relationships with SalePrice and low correlations with each other.
+In this section I will look at inter-variable relationships. For factor variables, I am interested in which levels have significantly different log survival odds. For quantitative variables, I am looking for linear relationships with log survival odds and low correlations with each other.
 
 ```{r cache=TRUE}
 dummies_fullrank <- dummyVars(~., data = full[, mdl_vars], fullRank = TRUE)
@@ -126,11 +131,13 @@ cor_out <- full_dum[train_index, ] %>% cor()
 cor_out[, "Survived.1"] %>% abs() %>% sort(decreasing = TRUE) %>% head(11)
 ```
  
+`Sex` is by the far the best predictor of survival.  `Title` is second, but recall that it basically combines sex and age. `Pclass` is third.  The next best predictors are numeric: `NetSurv`, `FarePerPass`, `Fare`, and `TktSize`.  No surprises here - you're best bet for survival is to be a rich woman.  Here is a visualization of the relationships.
+
 ```{r message=FALSE}
 plot_ggpairs <- function(cols) {
 full[train_index, ] %>% 
   ggpairs(
-    mapping = aes(col = Survived), 
+    mapping = aes(col = Survived, alpha = 0.2), 
     columns = cols,
     legend = c(1,1),
     lower = list(combo = wrap("facethist", bins = 20))
@@ -138,35 +145,171 @@ full[train_index, ] %>%
   theme_minimal() +
   theme(legend.position = "bottom") 
 }
-for(i in 1:4) {
-  print(plot_ggpairs(preds[(1:3) + 3*i]))
+for(i in 0:6) {
+  print(plot_ggpairs(preds[(1:2) + 2*i]))
 }
 ```
 
-# Influential Outliers
+The following tables break down the factor levels and associated odds ratios with the base level.
 
-Now I’ll look at influential outliers. When building a predictive model, I only need to address influential outliers for variables that are likely to be important in the final model. I’ll identify the most likely important variables with a correlation matrix of the numerical predictors. For every variable with correlation >= 0.5 (a moderate correlation), I’ll check the variable distribution to see whether any influential outliers exist.
+```{r echo=FALSE}
+write_tab <- function(dat, group_var){
+  fmla <- paste0("Survived ~ ", group_var)
 
+  mdl_obj <- glm(as.formula(fmla), data = dat, family = "binomial") %>%
+    tidy() %>%
+    mutate(term = str_remove(term, group_var), OR = exp(estimate)) %>% 
+    filter(term != "(Intercept)") %>%
+    select(term, OR)
 
+  dat %>%
+  group_by(!!sym(group_var)) %>%
+  summarise(
+    Lived = sum(if_else(Survived == "1", 1, 0)),
+    Died = sum(if_else(Survived == "0", 1, 0)),
+    N = Lived + Died,
+    Surv = Lived / N,
+    Odds = Surv / (1 - Surv) 
+  ) %>%
+  ungroup() %>%
+  rename(term = !!sym(group_var)) %>%
+  mutate(term = as.character(term), Surv = Surv * 100) %>%
+  left_join(mdl_obj, by = "term") %>%
+  select(term, N, Surv, Odds, OR) %>%
+  flextable::flextable() %>% 
+  flextable::colformat_int(j = 2) %>% 
+  flextable::colformat_num(j = 3, digits = 0, suffix = "%") %>%
+  flextable::colformat_num(j = c(4:5)) %>%
+  flextable::set_caption(fmla)
+}
 
+write_tab(full[train_index, ], group_var = "Sex")
 
-One last look at the decks.  Here are the survival rates.
+write_tab(full[train_index, ], group_var = "Title")
 
-```{r}
-#mosaicplot(data = full[train_index,], Deck ~ Survived, color = TRUE, main = NULL)
+write_tab(full[train_index, ], group_var = "Pclass")
+
+write_tab(full[train_index, ], group_var = "Embarked")
 ```
 
-Not much difference between decks B-D.
+
+# Influential Outliers
+
+Now I’ll look at influential outliers. When building a predictive model, I only need to address influential outliers for variables that are likely to be important in the final model.  Here are the bivariate relationships between `Survived` and each numeric predictor, controlling for `Sex`.
+
+```{r}
+plot_prob <- function(dat, rows, predictor) {
+  fmla <- paste0("Survived ~ Sex + ", predictor)
+  dat <- dat[rows, c("Survived", "Sex", predictor)]
+  glm(fmla, family = "binomial", data = dat) %>%
+    augment() %>%
+    mutate(Survived_int = as.numeric(Survived) - 1,
+           Fitted = exp(.fitted) / (1 + exp(.fitted))) %>%
+    ggplot(aes(x = !!sym(predictor), color = Sex)) +
+    geom_line(aes(y = exp(.fitted) / (1 + exp(.fitted))), show.legend = FALSE) +
+    geom_point(aes(y = Survived_int), alpha = 0.6,
+               position = position_jitter(height = .1), show.legend = FALSE) +
+#    theme_minimal() +
+    scale_color_brewer(palette = "Paired") +
+    labs(title = fmla, y = "Probability") +
+    facet_wrap(~ Sex)
+}
+```
 
 
+```{r fig.height = 3.5}
+plot_prob(full, train_index, "Age")
+```
 
+The relationship of Survived with `Age` is flat when controlling for `Sex`.  I don't see any high-leverage points.
 
+```{r fig.height = 3.5}
+plot_prob(full, train_index, "SibSp")
+```
 
+There are a few `SibSp =  8` rows that may be pulling the regression line down.  After capping the values at 5 I ran the plot again, but the slopes were not a lot different. The slopes are different, so I should probably model an interaction effect.
 
+```{r fig.height = 3.5}
+plot_prob(full, train_index, "Parch")
+```
+
+No outliers here.  Another case where an interaction effect will probably help.
+
+```{r fig.height = 3.5}
+plot_prob(full, train_index, "FarePerPass")
+```
+
+The 3 training rows with `FarePerPass` ~ $128 all survived.  They look like high-leverage points.  What happens if I cap fair at $100?
+
+```{r fig.height = 3.5}
+full %>% mutate(FarePerPass = if_else(FarePerPass > 100, 100, FarePerPass)) %>%
+plot_prob(train_index, "FarePerPass")
+```
+
+It doesn't seem to make much difference.  Let's try fitting a simple model `Survived ~ FarePerPass` with the taining data, then collapse the large fares and train again.
+
+```{r}
+train(
+  Survived ~ FarePerPass*Sex,
+  data = full[train_index, mdl_vars],
+  method = "glm", family = "binomial",
+  metric = "Accuracy",
+  trControl = trainControl(method = "cv", n = 10)
+)
+```
+
+Accuracy is 0.796.  Now what happens if I collapse `FarePerPass`?
+
+```{r}
+dat <- full[train_index, mdl_vars] %>% mutate(FarePerPass = if_else(FarePerPass > 100, 100, FarePerPass))
+train(
+  Survived ~ FarePerPass * Sex,
+  data = dat,
+  method = "glm", family = "binomial",
+  metric = "Accuracy",
+  trControl = trainControl(method = "cv", n = 10)
+)
+```
+
+The accuracy is 0.790, so it probably doesn't make sense to collapse `FarePerPass`.
+
+```{r fig.height = 3.5}
+plot_prob(full, train_index, "TicketN")
+```
+
+I don't see any outliers or interaction effects with `TicketN`.
+
+```{r fig.height = 3.5}
+plot_prob(full, train_index, "NetSurv")
+```
+
+`NetSurv` has no outliers, but the shapes between males and females are pretting different.  Let's see what interaction effects do. First without interaction effects.
+
+```{r}
+train(
+  Survived ~ NetSurv + Sex,
+  data = full[train_index, mdl_vars],
+  method = "glm", family = "binomial",
+  metric = "Accuracy",
+  trControl = trainControl(method = "cv", n = 10)
+)
+```
+
+Accuracy is 0.804.  Now with interaction effects.
+
+```{r}
+train(
+  Survived ~ NetSurv * Sex,
+  data = dat,
+  method = "glm", family = "binomial",
+  metric = "Accuracy",
+  trControl = trainControl(method = "cv", n = 10)
+)
+```
+
+No difference.
 
 # Save Work
 
-```{r}
-#save(d_raw_1, file = "./titanic_02.RData")
-```
+I didn't make any changes to the data set, so nothing to save here.
 

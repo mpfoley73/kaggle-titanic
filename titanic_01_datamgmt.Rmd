@@ -75,7 +75,7 @@ skimr::skim(full)
 ```{r}
 full$Survived <- factor(full$Survived)
 full$Pclass <- factor(full$Pclass)
-full$Sex <- factor(full$Sex)
+full$Sex <- factor(full$Sex, levels = c("male", "female"))
 full$Embarked <- factor(full$Embarked)
 ```
 

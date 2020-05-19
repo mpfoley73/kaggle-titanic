@@ -17,7 +17,18 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 
-This is a survey of the Titanic data.  The univariate analysis characterizes the predictor distributions.  The bivariate analysis characterizes relationships among the predictors and with the response variable.  The influential outliers analysis searches for problematic observations.
+This is a survey of the Titanic data.  The univariate analysis characterizes the predictor distributions.  The bivariate analysis characterizes relationships among the predictors and with the response variable.  The influential outliers analysis searches for problematic observations.  
+
+Conclusions:
+
+* Factor variables `Employee`, `Deck.A`, and `Title.Master` have near-zero-variance.
+
+* Nearly all of the quantitativ predictors suffer from skew.  It may make sense to transform these variables in modeling, especially for linear regression models.
+
+* `Sex` is by the far the best predictor of survival.  `Title` is second, but recall that it basically combines sex and age. `Pclass` is third. 
+
+* `Sex` is a moderating variable for `SibSp` and `ParCh`.
+
 
 # Setup
 
@@ -118,6 +129,7 @@ exec(grid.arrange, ncol = 2, !!!p)
 rm(col_skew, col_skew_is_high, col_skew_is_mod)
 ```
 
+Nearly all of the quantitativ predictors suffer from skew.  It may make sense to transform these variables in modeling.
 
 # Bivariate Analysis
 

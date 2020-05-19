@@ -1,0 +1,78 @@
+---
+title: "Kaggle - Titanic"
+subtitle: "Step 3: Logistic Regression"
+author: "Michael Foley"
+date: "5/19/2020"
+output: 
+  html_document:
+    theme: flatly
+    toc: true
+    highlight: haddock
+    fig_width: 9
+    fig_caption: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+The logistic regression model is simple and can be used for inference.  The model produced in this section had an overall accuracy of 0.817, a sensitivity of 0.753, specificity of 0.854, and AUC of 0.882.
+
+
+# Setup
+
+```{r message=FALSE}
+library(tidyverse)
+library(caret)
+library(recipes)
+library(broom)
+```
+
+The initial data management created the data set `full`, with training rows indexed by `train_index`.  I'll break this back into `training` and `testing`, then 80:20 split `training` to train on `training_80` and to compare models with `training_20`.
+
+```{r warning=FALSE, message=FALSE}
+load("./titanic_01.RData")
+
+training <- full[train_index, ]
+testing <- full[-train_index, ]
+ 
+set.seed(1920)
+partition <- createDataPartition(training$Survived, p = 0.80, list = FALSE)
+training_80 <- training[partition, ]
+training_20 <- training[-partition, ]
+rm(partition)
+```
+
+I'm using 10-fold CV, but it may be interesting to [compare with bootstrapping](http://appliedpredictivemodeling.com/blog/2014/11/27/08ks7leh0zof45zpf5vqe56d1sahb0) and other strategies. 
+
+```{r}
+train_control <- trainControl(
+  method = "cv",
+  number = 10,
+  savePredictions = "final",
+  classProbs = TRUE,                 # return predicted classes AND probabilites
+  summaryFunction = twoClassSummary  # calculate sensitivity, specificity, and AUC
+)
+```
+
+I'll try two models: a kitchen sink model with all predictors, and a parsimonious model.  
+
+# Kitchen Sink Model
+
+I'll use the recipe method to train.
+
+```{r}
+mdl_vars <- subset(colnames(training_80), !colnames(training_80) %in% 
+                     c("Surname", "Name", "Ticket", "Cabin", "Fare"))
+
+rcpe <- recipe(Survived ~ ., data = training_80[, mdl_vars]) %>%
+  update_role(PassengerId, new_role = "id variable") %>%
+#  step_interact(terms = ~ )
+  step_dummy(all_nominal(), -all_outcomes())
+
+
+prep(rcpe)
+```
+
+

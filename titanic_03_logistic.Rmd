@@ -68,11 +68,40 @@ mdl_vars <- subset(colnames(training_80), !colnames(training_80) %in%
 
 rcpe <- recipe(Survived ~ ., data = training_80[, mdl_vars]) %>%
   update_role(PassengerId, new_role = "id variable") %>%
-#  step_interact(terms = ~ )
-  step_dummy(all_nominal(), -all_outcomes())
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_interact(terms = ~
+                  SibSp:starts_with("Sex_") +
+                  Parch:starts_with("Sex_") +
+                  NetSurv:starts_with("Sex_")) %>%
+  step_rm(Title_Miss)  # to avoid rank deficiency
 
-
-prep(rcpe)
+prep(rcpe, training = training_80)
 ```
 
+```{r}
+set.seed(1970)
+mdl_kitch <- train(
+  rcpe,
+  training_80[, mdl_vars],
+  method = "glm",
+  family = "binomial",
+  trControl = train_control,
+  metric = "ROC"
+)
+mdl_kitch
+summary(mdl_kitch)
+confusionMatrix(mdl_kitch)
+# Predict classes and probabilities for holdout set
+predicted_classes <- predict(mdl_kitch, newdata = training_20) 
+predicted_probs <- predict(mdl_kitch, newdata = training_20, type = "prob")
+
+confusionMatrix(predicted_classes, training_20$Survived)
+
+
+```
+
+```{r}
+levels(training_80$Survived)
+training_80 %>% count(Survived)
+```
 

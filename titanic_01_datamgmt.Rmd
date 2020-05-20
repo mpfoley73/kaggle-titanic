@@ -70,10 +70,10 @@ At this point, I know the full data set is 1,309 x 12, including 10 feature colu
 skimr::skim(full)
 ```
 
-`Survived`, `Pclass`, `Sex`, and `Embarked` should be factors.
+`Survived`, `Pclass`, `Sex`, and `Embarked` should be factors.  Assign character labels for `Survived` because `train()` will create variable names from the levels.
 
 ```{r}
-full$Survived <- factor(full$Survived)
+full$Survived <- factor(full$Survived, labels = c("No", "Yes"))
 full$Pclass <- factor(full$Pclass)
 full$Sex <- factor(full$Sex, levels = c("male", "female"))
 full$Embarked <- factor(full$Embarked)
@@ -436,7 +436,7 @@ The number of siblings plus spouse on board, `SibSp`, and number of parents and 
 plot_surv_grp <- function(dat, x_grp, facet_grp){
   dat %>%
   group_by(!!sym(facet_grp), !!sym(x_grp)) %>%
-  summarize(n = n(), pct_surv = sum(if_else(Survived == "1", 1, 0)) / n()) %>%
+  summarize(n = n(), pct_surv = sum(if_else(Survived == "Yes", 1, 0)) / n()) %>%
   mutate(logodds = round(pct_surv / (1 - pct_surv), 1)) %>%
   ggplot(aes(x = !!sym(x_grp), y = logodds, color = n, label = logodds)) + 
   geom_point() +
@@ -495,13 +495,13 @@ Is the survivorship of the other passengers on the ticket predictive of your sur
 full <- full %>%
   group_by(Ticket) %>%
   mutate(
-    SurvN = sum(Survived == "1", na.rm = TRUE),
-    PrshN = sum(Survived == "0", na.rm = TRUE)
+    SurvN = sum(Survived == "Yes", na.rm = TRUE),
+    PrshN = sum(Survived == "No", na.rm = TRUE)
   ) %>% 
   ungroup() %>%
   mutate(
-    SurvN = SurvN - if_else(!is.na(Survived) & Survived == "1", 1, 0),
-    PrshN = PrshN - if_else(!is.na(Survived) & Survived == "0", 1, 0),
+    SurvN = SurvN - if_else(!is.na(Survived) & Survived == "Yes", 1, 0),
+    PrshN = PrshN - if_else(!is.na(Survived) & Survived == "No", 1, 0),
     NetSurv = SurvN - PrshN,
   ) %>%
   select(-SurvN, -PrshN)
@@ -513,7 +513,7 @@ plot_net_surv <- function() {
     group_by(NetSurv, Sex) %>%
     summarize(
       n = n(), 
-      log_odds = log(mean(Survived == "1") / (1 - mean(Survived == "1")))
+      log_odds = log(mean(Survived == "Yes") / (1 - mean(Survived == "Yes")))
     ) %>%
     ggplot(aes(x = NetSurv, y = log_odds, color = Sex)) +
     geom_point(aes(size = n)) +
@@ -529,7 +529,7 @@ plot_net_surv()
 It certainly does appear to be predictive.  The tails are thinly populated and the linearity breaks down.  I can probably collapse the tails.
 
 ```{r}
-full[train_index, ] %>% group_by(NetSurv) %>% summarize(n = n(), mean = mean(Survived == 1))
+full[train_index, ] %>% group_by(NetSurv) %>% summarize(n = n(), mean = mean(Survived == "Yes"))
 ```
 
 I'll collapse bins [-6, -1] and [1, 3].

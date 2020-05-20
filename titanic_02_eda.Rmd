@@ -27,7 +27,7 @@ Conclusions:
 
 * `Sex` is by the far the best predictor of survival.  `Title` is second, but recall that it basically combines sex and age. `Pclass` is third. 
 
-* `Sex` is a moderating variable for `SibSp` and `ParCh`.
+* `Sex` is a moderating variable for `SibSp`, `ParCh`, and `NetSurv`.
 
 
 # Setup
@@ -140,7 +140,7 @@ dummies_fullrank <- dummyVars(~., data = full[, mdl_vars], fullRank = TRUE)
 full_dum <- as.data.frame(predict(dummies_fullrank, full[, mdl_vars]))
 
 cor_out <- full_dum[train_index, ] %>% cor()
-cor_out[, "Survived.1"] %>% abs() %>% sort(decreasing = TRUE) %>% head(11)
+cor_out[, "Survived.Yes"] %>% abs() %>% sort(decreasing = TRUE) %>% head(11)
 ```
  
 `Sex` is by the far the best predictor of survival.  `Title` is second, but recall that it basically combines sex and age. `Pclass` is third.  The next best predictors are numeric: `NetSurv`, `FarePerPass`, `Fare`, and `TktSize`.  No surprises here - you're best bet for survival is to be a rich woman.  Here is a visualization of the relationships.
@@ -177,8 +177,8 @@ write_tab <- function(dat, group_var){
   dat %>%
   group_by(!!sym(group_var)) %>%
   summarise(
-    Lived = sum(if_else(Survived == "1", 1, 0)),
-    Died = sum(if_else(Survived == "0", 1, 0)),
+    Lived = sum(if_else(Survived == "Yes", 1, 0)),
+    Died = sum(if_else(Survived == "No", 1, 0)),
     N = Lived + Died,
     Surv = Lived / N,
     Odds = Surv / (1 - Surv) 
@@ -261,29 +261,35 @@ plot_prob(train_index, "FarePerPass")
 It doesn't seem to make much difference.  Let's try fitting a simple model `Survived ~ FarePerPass` with the taining data, then collapse the large fares and train again.
 
 ```{r}
-train(
+set.seed(1995)
+x <-train(
   Survived ~ FarePerPass*Sex,
   data = full[train_index, mdl_vars],
   method = "glm", family = "binomial",
   metric = "Accuracy",
   trControl = trainControl(method = "cv", n = 10)
 )
+x
+summary(x)
 ```
 
-Accuracy is 0.796.  Now what happens if I collapse `FarePerPass`?
+Accuracy is 0.790.  All coefficient estimates are significant.  Now what happens if I collapse `FarePerPass`?
 
 ```{r}
+set.seed(1995)
 dat <- full[train_index, mdl_vars] %>% mutate(FarePerPass = if_else(FarePerPass > 100, 100, FarePerPass))
-train(
-  Survived ~ FarePerPass * Sex,
+x <- train(
+  Survived ~ FarePerPass*Sex,
   data = dat,
   method = "glm", family = "binomial",
   metric = "Accuracy",
   trControl = trainControl(method = "cv", n = 10)
 )
+x
+summary(x)
 ```
 
-The accuracy is 0.790, so it probably doesn't make sense to collapse `FarePerPass`.
+The accuracy stayed the same at 0.790.  The coefficient estimates are still significant (even more so for `Sex`).  It probably doesn't make sense to collapse `FarePerPass`.
 
 ```{r fig.height = 3.5}
 plot_prob(full, train_index, "TicketN")
@@ -298,28 +304,34 @@ plot_prob(full, train_index, "NetSurv")
 `NetSurv` has no outliers, but the shapes between males and females are pretting different.  Let's see what interaction effects do. First without interaction effects.
 
 ```{r}
-train(
+set.seed(1995)
+x <- train(
   Survived ~ NetSurv + Sex,
   data = full[train_index, mdl_vars],
   method = "glm", family = "binomial",
   metric = "Accuracy",
   trControl = trainControl(method = "cv", n = 10)
 )
+x
+summary(x)
 ```
 
 Accuracy is 0.804.  Now with interaction effects.
 
 ```{r}
-train(
+set.seed(1995)
+x <- train(
   Survived ~ NetSurv * Sex,
   data = dat,
   method = "glm", family = "binomial",
   metric = "Accuracy",
   trControl = trainControl(method = "cv", n = 10)
 )
+x
+summary(x)
 ```
 
-No difference.
+No difference in accuracy.  The p-value for the interaction term is significant, so I should probably add it to the model.
 
 # Save Work
 

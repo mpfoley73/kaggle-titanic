@@ -17,7 +17,13 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 
-The logistic regression model is simple and can be used for inference.  The model produced in this section had an overall accuracy of 0.817, a sensitivity of 0.753, specificity of 0.854, and AUC of 0.882.
+The logistic regression model is simple and can be used for inference.  The model produced in this section had an overall accuracy of 0.8305, a sensitivity of 0.9358, specificity of 0.6618, and AUC of 0.882.
+
+The **binary** logistic regression model is
+
+$$y = logit(\pi) = \ln \left( \frac{\pi}{1 - \pi} \right) = X \beta$$
+
+where $\pi$ is the event probability. The model predicts the *log odds* of the response variable.  The model is fit with maximum likelihood estimation.  There is no closed-form solution, so GLM estimates coefficients with interatively reweighted least squares. 
 
 
 # Setup
@@ -29,7 +35,7 @@ library(recipes)
 library(broom)
 ```
 
-The initial data management created the data set `full`, with training rows indexed by `train_index`.  I'll break this back into `training` and `testing`, then 80:20 split `training` to train on `training_80` and to compare models with `training_20`.
+The initial data management created the data set `full`, with training rows indexed by `train_index`.  I'll split this into `training` and `testing`, then 80:20 split `training` into `training_80` for training and `training_20` to compare models.
 
 ```{r warning=FALSE, message=FALSE}
 load("./titanic_01.RData")
@@ -60,11 +66,17 @@ I'll try two models: a kitchen sink model with all predictors, and a parsimoniou
 
 # Kitchen Sink Model
 
-I'll use the recipe method to train.
+By "all predictors", I mean all non-character predictors - I'm throwing out `Surname`, `Name`, `Ticket`, and `Cabin`.  I'm also throwing out `Fare` since it is redundant to `FarePerPass` and `TktSize`.  That leaves me with `PassengerID`, `Survived`, and 14 predictors.
 
 ```{r}
 mdl_vars <- subset(colnames(training_80), !colnames(training_80) %in% 
                      c("Surname", "Name", "Ticket", "Cabin", "Fare"))
+mdl_vars
+```
+
+I'll use the recipe method to train.  From the exploratory analysis section I've decided to create interactions `SibSp:Sex`, `Parch:Sex`, and `NetSurv:Sex`.  *Note that I remove Title
+
+```{r}
 
 rcpe <- recipe(Survived ~ ., data = training_80[, mdl_vars]) %>%
   update_role(PassengerId, new_role = "id variable") %>%
@@ -76,6 +88,19 @@ rcpe <- recipe(Survived ~ ., data = training_80[, mdl_vars]) %>%
   step_rm(Title_Miss)  # to avoid rank deficiency
 
 prep(rcpe, training = training_80)
+```
+
+```{r}
+x <- glm(Survived ~ Sex*Age, data = training_80, family = "binomial")
+summary(x)
+
+training %>% mutate(AgeBin = floor(Age / 4)*4) %>% 
+  count(Sex, AgeBin, Survived) %>%
+  ungroup() %>% group_by(Sex, AgeBin) %>% mutate(N = sum(n), pct = n / sum(n)) %>%
+  filter(Survived == "Yes") %>%
+ggplot(aes(x = as.factor(AgeBin), y = pct, fill = N)) + 
+  geom_col() +
+  facet_wrap(~Sex)
 ```
 
 ```{r}

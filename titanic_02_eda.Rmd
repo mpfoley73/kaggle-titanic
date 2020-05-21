@@ -205,9 +205,36 @@ write_tab(full[train_index, ], group_var = "Embarked")
 ```
 
 
-# Influential Outliers
+# Linearity
 
-Now I’ll look at influential outliers. When building a predictive model, I only need to address influential outliers for variables that are likely to be important in the final model.  Here are the bivariate relationships between `Survived` and each numeric predictor, controlling for `Sex`.
+For linear models like logistic regression, the relationship between the numeric predictors and the log survival odds should be linear.  Look closely at these relationships and see if any transformations might help create linearity.
+
+## Age
+
+
+
+```{r}
+plot_bin <- function(dat, rows, predictor, bin_size) {
+  dat_new <- dat %>% 
+    mutate(bin = floor(!!sym(predictor) / bin_size) * bin_size) 
+  %>%
+    count(Sex, bin, Survived) %>%
+    ungroup() %>% 
+    group_by(Sex, bin) %>% 
+    mutate(
+      N = sum(n), 
+      p = n / N,
+      odds = p / (1 - p),
+      log_odds = log(odds)
+    ) %>%
+    filter(Survived == "Yes") %>%
+  ggplot(aes(x = bin, y = log_odds, fill = N)) + 
+    geom_line() +
+    labs(Title = fmla)
+    facet_wrap(~Sex)
+}
+```
+
 
 ```{r}
 plot_prob <- function(dat, rows, predictor) {

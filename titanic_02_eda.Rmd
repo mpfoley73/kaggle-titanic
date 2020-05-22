@@ -209,15 +209,12 @@ write_tab(full[train_index, ], group_var = "Embarked")
 
 For linear models like logistic regression, the relationship between the numeric predictors and the log survival odds should be linear.  Look closely at these relationships and see if any transformations might help create linearity.
 
-## Age
-
-
+Define handy plot functions.
 
 ```{r}
 plot_bin <- function(dat, rows, predictor, bin_size) {
-  dat_new <- dat %>% 
-    mutate(bin = floor(!!sym(predictor) / bin_size) * bin_size) 
-  %>%
+  dat[rows, ] %>% 
+    mutate(bin = floor(!!sym(predictor) / bin_size) * bin_size) %>%
     count(Sex, bin, Survived) %>%
     ungroup() %>% 
     group_by(Sex, bin) %>% 
@@ -228,39 +225,79 @@ plot_bin <- function(dat, rows, predictor, bin_size) {
       log_odds = log(odds)
     ) %>%
     filter(Survived == "Yes") %>%
-  ggplot(aes(x = bin, y = log_odds, fill = N)) + 
-    geom_line() +
-    labs(Title = fmla)
+  ggplot(aes(x = bin, y = log_odds, fill = N)) +
+    geom_col() +
+    labs(title = paste0("Survival vs ", predictor),
+         caption = paste0(predictor, " bin size = ", bin_size, ".")) +
     facet_wrap(~Sex)
 }
 ```
 
-
 ```{r}
-plot_prob <- function(dat, rows, predictor) {
-  fmla <- paste0("Survived ~ Sex + ", predictor)
-  dat <- dat[rows, c("Survived", "Sex", predictor)]
-  glm(fmla, family = "binomial", data = dat) %>%
-    augment() %>%
-    mutate(Survived_int = as.numeric(Survived) - 1,
-           Fitted = exp(.fitted) / (1 + exp(.fitted))) %>%
-    ggplot(aes(x = !!sym(predictor), color = Sex)) +
-    geom_line(aes(y = exp(.fitted) / (1 + exp(.fitted))), show.legend = FALSE) +
-    geom_point(aes(y = Survived_int), alpha = 0.6,
-               position = position_jitter(height = .1), show.legend = FALSE) +
-#    theme_minimal() +
-    scale_color_brewer(palette = "Paired") +
-    labs(title = fmla, y = "Probability") +
-    facet_wrap(~ Sex)
+plot_prob2 <- function(dat, fmla, predictor, color){
+  fit <- glm(fmla, family = "binomial", data = dat)
+  fit
+  # fit %>%
+  #   augment() %>%
+  #   mutate(Survived_int = as.numeric(Survived) - 1,
+  #          Fitted = exp(.fitted) / (1 + exp(.fitted))) %>%
+  #   ggplot(aes(x = !!sym(predictor), color = !!sym(color))) +
+  #   geom_line(aes(y = exp(.fitted) / (1 + exp(.fitted))), show.legend = FALSE) +
+  #   geom_point(aes(y = Survived_int), alpha = 0.6,
+  #              position = position_jitter(height = .05), 
+  #              show.legend = FALSE) +
+  #   scale_color_brewer(palette = "Paired") +
+  #   labs(title = fmla, 
+  #        y = "Probability", 
+  #        subtitle = paste0("Accuracy = ", scales::percent(fit$results$Accuracy))) +
+  #   facet_wrap(~ Sex)
 }
 ```
 
 
-```{r fig.height = 3.5}
-plot_prob(full, train_index, "Age")
+## Age
+
+```{r}
+plot_bin(full, train_index, "Age", 4)
 ```
 
-The relationship of Survived with `Age` is flat when controlling for `Sex`.  I don't see any high-leverage points.
+It looks like for both males and females, survival odds fall until around age 16, increase until age 32, fall through age 45, then increase again.  What if we create an `AgeCohort` with theses ranges and make it an interaction with `Age`?
+
+```{r}
+dat <- full[train_index, ] %>%
+  mutate(
+    AgeCohort = case_when(
+      Age <= 16 ~ "0-16",
+      Age <= 32 ~ "17-32",
+      Age <= 45 ~ "33-45",
+      TRUE ~ "46-80"
+    )
+  )
+dat %>% plot_prob2("Survived ~ Sex + AgeCohort*Age", "Age", "AgeCohort")
+```
+
+I might have been wrong about the increasing survival odds after age 45.  For men, almost older person died.  For women, almost everyone lived. Maybe it needs to be a 3-way interaction?
+
+```{r}
+dat %>% plot_prob2("Survived ~ Sex*AgeCohort*Age", "Age", "AgeCohort")
+```
+
+## SibSp
+
+```{r}
+plot_bin(full, train_index, "SibSp", 1)
+```
+
+Males traveling alone have particularly low survival odds.  Their odds are better if in a pair. For females, it's the opposite.  The n-size for `SibSp` >= 3 seems too low to infer much.  What if we create an `SibSp0` flag?
+
+```{r}
+dat <- full[train_index, ] %>%
+  mutate(
+    SibSp0 = if_else(SibSp == 0, "yes", "no")
+  )
+dat %>% plot_prob2("Survived ~ Sex*SibSp0*SibSp", "SibSp", "SibSp0")
+```
+
 
 ```{r fig.height = 3.5}
 plot_prob(full, train_index, "SibSp")

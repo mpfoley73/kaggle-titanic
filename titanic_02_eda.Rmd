@@ -212,9 +212,9 @@ For linear models like logistic regression, the relationship between the numeric
 Define handy plot functions.
 
 ```{r}
-plot_bin <- function(dat, rows, predictor, bin_size) {
+plot_bin <- function(dat, rows, predictor, breaks) {
   dat[rows, ] %>% 
-    mutate(bin = floor(!!sym(predictor) / bin_size) * bin_size) %>%
+    mutate(bin = cut(!!sym(predictor), breaks = breaks, dig.lab = 2)) %>%
     count(Sex, bin, Survived) %>%
     ungroup() %>% 
     group_by(Sex, bin) %>% 
@@ -227,8 +227,10 @@ plot_bin <- function(dat, rows, predictor, bin_size) {
     filter(Survived == "Yes") %>%
   ggplot(aes(x = bin, y = log_odds, fill = N)) +
     geom_col() +
+    theme(axis.text.x = element_text(angle = 90)) +
     labs(title = paste0("Survival vs ", predictor),
-         caption = paste0(predictor, " bin size = ", bin_size, ".")) +
+         x = predictor,
+         caption = paste0(predictor, " breaks = ", breaks, ".")) +
     facet_wrap(~Sex)
 }
 ```
@@ -237,6 +239,7 @@ plot_bin <- function(dat, rows, predictor, bin_size) {
 plot_prob2 <- function(dat, fmla, predictor, color){
   fit <- glm(fmla, family = "binomial", data = dat)
   fit
+  summary(fit)
   # fit %>%
   #   augment() %>%
   #   mutate(Survived_int = as.numeric(Survived) - 1,
@@ -258,7 +261,7 @@ plot_prob2 <- function(dat, fmla, predictor, color){
 ## Age
 
 ```{r}
-plot_bin(full, train_index, "Age", 4)
+plot_bin(full, train_index, "Age", 20)
 ```
 
 It looks like for both males and females, survival odds fall until around age 16, increase until age 32, fall through age 45, then increase again.  What if we create an `AgeCohort` with theses ranges and make it an interaction with `Age`?
@@ -273,7 +276,40 @@ dat <- full[train_index, ] %>%
       TRUE ~ "46-80"
     )
   )
-dat %>% plot_prob2("Survived ~ Sex + AgeCohort*Age", "Age", "AgeCohort")
+dat %>% plot_prob2("Survived ~ Sex * Age*AgeCohort", "Age", "AgeCohort")
+mdl <- train(
+  Survived ~ Sex * AgeCohort*Age,
+  dat,
+  method = "glm", family = "binomial",
+  metric = "Accuracy",
+  trControl = trainControl(method = "cv", n = 10)      
+)
+summary(mdl)
+mdl$finalModel$fitted.values
+dat$p <- mdl$finalModel$fitted.values
+dat$bin <- cut(dat$Age, breaks = 20)
+dat %>% 
+    group_by(Sex, bin, Survived) %>%
+    summarize(n = n(), mean_p = mean(p)) %>%
+    ungroup() %>% 
+    group_by(Sex, bin) %>% 
+    mutate(
+      N = sum(n), 
+      prop = n / N,
+      odds = prop / (1 - prop),
+      log_odds = log(odds),
+      mean_p = mean(mean_p, na.rm = TRUE),
+      p_odds = log(mean_p / (1 - mean_p))
+    ) %>%
+    filter(Survived == "Yes") %>%
+  ggplot(aes(x = bin, fill = N)) +
+    geom_col(aes(y = log_odds)) +
+    geom_point(aes(y = p_odds)) +
+    theme(axis.text.x = element_text(angle = 90)) +
+    labs(title = paste0("Survival vs ", 'predictor'),
+         x = "predictor",
+         caption = paste0("predictor", " breaks = ", "breaks", ".")) +
+    facet_wrap(~Sex)  
 ```
 
 I might have been wrong about the increasing survival odds after age 45.  For men, almost older person died.  For women, almost everyone lived. Maybe it needs to be a 3-way interaction?
@@ -298,6 +334,11 @@ dat <- full[train_index, ] %>%
 dat %>% plot_prob2("Survived ~ Sex*SibSp0*SibSp", "SibSp", "SibSp0")
 ```
 
+## Parch
+
+## FarePerPass
+
+## NetSurv
 
 ```{r fig.height = 3.5}
 plot_prob(full, train_index, "SibSp")

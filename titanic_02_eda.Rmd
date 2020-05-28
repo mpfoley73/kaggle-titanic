@@ -27,7 +27,7 @@ Conclusions:
 
 * `Sex` is by the far the best predictor of survival.  `Title` is second, but recall that it basically combines sex and age. `Pclass` is third. 
 
-* `Sex` is a moderating variable for `SibSp`, `ParCh`, and `NetSurv`.
+* Define an `AgeCohort` predictor for age bins (<16, 16-48, >48).  For linear models, `AgeCohort` should interact with `Age` and `Sex` as `Age*Sex*AgeCohort`. Linear models may also benefit from an interaction between `Sex` and `FamSize`, and between `Sex` and `NetSurv`.
 
 
 # Setup
@@ -213,7 +213,7 @@ The conclusions from this section are:
 
 * Define an `AgeCohort` predictor for age bins (<16, 16-48, >48).  For linear models, `AgeCohort` should interact with `Age` and `Sex` as `Age*Sex*AgeCohort`.
 
-* It may help to model an interaction with Sex and family size.
+* It may help to model an interaction with `Sex` and `FamSize`, and with `Sex` and `NetSurv`.
 
 Define handy functions for this analysis.
 
@@ -247,7 +247,7 @@ plot_bin <- function(dat, x, fmla) {
       geom_col(aes(y = log_odds)) +
       geom_point(aes(y = p_odds)) +
       theme(axis.text.x = element_text(angle = 90)) +
-      scale_y_continuous(limits = c(-3, 3)) +
+      scale_y_continuous(limits = c(-3.5, 3.5)) +
       labs(title = fmla, x = x) +
       facet_wrap(~Sex)
 }
@@ -291,7 +291,7 @@ summary(mdl)
 
 ## Parch
 
-Males traveling without parents or children seemed to have a rough go of it.  Otherwise, the odds of survival seemed to fall with increasing numbers of parents and children.  The interaction with Sex and family size seems to capture this well enough.
+Males traveling without parents or children seemed to have a rough go of it.  Otherwise, the odds of survival seemed to fall with increasing numbers of parents and children.  The interaction with Sex and family size `FamSize` seems to capture this well enough.
 
 ```{r}
 fmla = "Survived ~ Sex + Parch + FamSize*Sex"
@@ -304,118 +304,40 @@ summary(mdl)
 
 ## FarePerPass
 
-Males traveling without a spouse or siblings seemed to have a rough go of it.  Otherwise, the odds of survival seemed to fall with increasing numbers of spouse + siblings.  It may help to model an interaction with Sex and family size.
+Survival odds seem to increase with ticket price per passenger with no interaction effects.
 
 ```{r}
-fmla = "Survived ~ Sex + Far"
-dat <- full[train_index, ] 
+fmla = "Survived ~ Sex + FarePerPass"
+dat <- full[train_index, ] %>% mutate(FareBin = cut(FarePerPass, breaks = 20, dig.lab = 2))
 mdl <- model_bin(dat, fmla)
 dat$p <- mdl$finalModel$fitted.values  
-plot_bin(dat, x = "SibSp", fmla = fmla)
+plot_bin(dat, x = "FareBin", fmla = fmla)
 summary(mdl)
 ```
 
 ## NetSurv
 
-```{r fig.height = 3.5}
-plot_prob(full, train_index, "SibSp")
-```
-
-There are a few `SibSp =  8` rows that may be pulling the regression line down.  After capping the values at 5 I ran the plot again, but the slopes were not a lot different. The slopes are different, so I should probably model an interaction effect.
-
-```{r fig.height = 3.5}
-plot_prob(full, train_index, "Parch")
-```
-
-No outliers here.  Another case where an interaction effect will probably help.
-
-```{r fig.height = 3.5}
-plot_prob(full, train_index, "FarePerPass")
-```
-
-The 3 training rows with `FarePerPass` ~ $128 all survived.  They look like high-leverage points.  What happens if I cap fair at $100?
-
-```{r fig.height = 3.5}
-full %>% mutate(FarePerPass = if_else(FarePerPass > 100, 100, FarePerPass)) %>%
-plot_prob(train_index, "FarePerPass")
-```
-
-It doesn't seem to make much difference.  Let's try fitting a simple model `Survived ~ FarePerPass` with the taining data, then collapse the large fares and train again.
+There seems to be a small interaction effect between sex and net survivors.
 
 ```{r}
-set.seed(1995)
-x <-train(
-  Survived ~ FarePerPass*Sex,
-  data = full[train_index, mdl_vars],
-  method = "glm", family = "binomial",
-  metric = "Accuracy",
-  trControl = trainControl(method = "cv", n = 10)
-)
-x
-summary(x)
+fmla = "Survived ~ Sex*NetSurv"
+mdl <- model_bin(dat, fmla)
+dat$p <- mdl$finalModel$fitted.values  
+plot_bin(dat, x = "NetSurv", fmla = fmla)
+summary(mdl)
 ```
 
-Accuracy is 0.790.  All coefficient estimates are significant.  Now what happens if I collapse `FarePerPass`?
 
-```{r}
-set.seed(1995)
-dat <- full[train_index, mdl_vars] %>% mutate(FarePerPass = if_else(FarePerPass > 100, 100, FarePerPass))
-x <- train(
-  Survived ~ FarePerPass*Sex,
-  data = dat,
-  method = "glm", family = "binomial",
-  metric = "Accuracy",
-  trControl = trainControl(method = "cv", n = 10)
-)
-x
-summary(x)
-```
-
-The accuracy stayed the same at 0.790.  The coefficient estimates are still significant (even more so for `Sex`).  It probably doesn't make sense to collapse `FarePerPass`.
-
-```{r fig.height = 3.5}
-plot_prob(full, train_index, "TicketN")
-```
-
-I don't see any outliers or interaction effects with `TicketN`.
-
-```{r fig.height = 3.5}
-plot_prob(full, train_index, "NetSurv")
-```
-
-`NetSurv` has no outliers, but the shapes between males and females are pretting different.  Let's see what interaction effects do. First without interaction effects.
-
-```{r}
-set.seed(1995)
-x <- train(
-  Survived ~ NetSurv + Sex,
-  data = full[train_index, mdl_vars],
-  method = "glm", family = "binomial",
-  metric = "Accuracy",
-  trControl = trainControl(method = "cv", n = 10)
-)
-x
-summary(x)
-```
-
-Accuracy is 0.804.  Now with interaction effects.
-
-```{r}
-set.seed(1995)
-x <- train(
-  Survived ~ NetSurv * Sex,
-  data = dat,
-  method = "glm", family = "binomial",
-  metric = "Accuracy",
-  trControl = trainControl(method = "cv", n = 10)
-)
-x
-summary(x)
-```
-
-No difference in accuracy.  The p-value for the interaction term is significant, so I should probably add it to the model.
 
 # Save Work
 
-I didn't make any changes to the data set, so nothing to save here.
+Another look at the data.  I've added one variable to the data set (`AgeCohort`).
+
+```{r}
+skimr::skim(full)
+```
+
+```{r}
+save(full, train_index, file = "./titanic_02.RData")
+```
 

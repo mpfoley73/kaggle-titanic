@@ -39,3 +39,4 @@ vignettes/*.pdf
 *.html
 *.Rdata
 *.png
+*.csv

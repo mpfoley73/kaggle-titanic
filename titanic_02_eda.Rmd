@@ -129,11 +129,13 @@ exec(grid.arrange, ncol = 2, !!!p)
 rm(col_skew, col_skew_is_high, col_skew_is_mod)
 ```
 
-Nearly all of the quantitativ predictors suffer from skew.  It may make sense to transform these variables in modeling.
+Nearly all of the quantitative predictors suffer from skew.  It may make sense to transform these variables in modeling.
 
 # Bivariate Analysis
 
 In this section I will look at inter-variable relationships. For factor variables, I am interested in which levels have significantly different log survival odds. For quantitative variables, I am looking for linear relationships with log survival odds and low correlations with each other.
+
+Before I begin, let's see what variables are correlated with survival.
 
 ```{r cache=TRUE}
 dummies_fullrank <- dummyVars(~., data = full[, mdl_vars], fullRank = TRUE)
@@ -143,22 +145,120 @@ cor_out <- full_dum[train_index, ] %>% cor()
 cor_out[, "Survived.Yes"] %>% abs() %>% sort(decreasing = TRUE) %>% head(11)
 ```
  
-`Sex` is by the far the best predictor of survival.  `Title` is second, but recall that it basically combines sex and age. `Pclass` is third.  The next best predictors are numeric: `NetSurv`, `FarePerPass`, `Fare`, and `TktSize`.  No surprises here - you're best bet for survival is to be a rich woman.  Here is a visualization of the relationships.
+`Sex` is by the far the best predictor of survival.  `Title` is second, but recall that it basically combines sex and age. `Pclass` is third.  The next best predictors are numeric: `NetSurv`, `FarePerPass`, `Fare`, and `TktSize`.  No surprises here - you're best bet for survival is to be a rich woman.  
+
+## Survived ~ Factor Predictor Relationships
+
+Here are the survival rates grouped by the predictor variables.  I'm faceting by `Sex` because I know already the genders experienced different outcomes.  Which levels differ from others?  Do levels interact with `Sex`?
+
+```{r}
+plot_bv_bar <- function(dat, fct_var) {
+  dat %>%
+    count(!!sym(fct_var), Sex, Survived) %>%
+    ungroup() %>%
+    group_by(!!sym(fct_var), Sex) %>%
+    mutate(pct = paste0(scales::percent(n / sum(n)), " (", n, ")")) %>%
+    ggplot(aes(x = !!sym(fct_var), y = n, fill = Survived, label = pct)) +
+    geom_col() +
+    geom_text(position = position_stack(vjust = .5), size = 3) +
+    scale_fill_manual(values = c("#c47179", "#a4e6f4")) +
+#    theme(legend.position = "bottom") +
+    labs(title = paste0("Survived ~ ", fct_var), x = "") +
+    facet_wrap(~ Sex)
+}
+```
+
+Third class passengers (`Pclass = 3`) had a rough go of it.  Males survival odds are cut in half when dropping to 2nd class, then stay about the same for 3rd class.  Female survival odds stayed the same for 2nd class, but halved when dropping to 3rd class.  N-size is small for the females though.  Looks like all three classes are important, but should be moderated by `Sex`.
+
+```{r}
+plot_bv_bar(full[train_index, ], "Pclass")
+```
+
+`Title` is mostly a combination of `Age` and `Sex`.  The survival rates for females do not change by title, but title is important for the males.  If `Title` is in the model, it should interact with `Sex`.
+
+```{r}
+plot_bv_bar(full[train_index, ], "Title")
+```
+
+Embarking from Queenstown was a death sentence for males.  The port didn't have a strong effect for females.  `Embarked` should interasct with `Sex.
+```{r}
+plot_bv_bar(full[train_index, ], "Embarked")
+```
+
+Employee has such a small n-size that it may not be a very useful variable. No females were employees.
+```{r}
+plot_bv_bar(full[train_index, ], "Employee")
+```
+
+Generally, it's better to have a cabin on a deck at the top of the alphabet.  No interaction with `Sex`.
+```{r}
+plot_bv_bar(full[train_index, ], "Deck")
+```
+
+Traveling alone was deadly for males, not so much for females.  Good case for an interaction effect.
+```{r}
+plot_bv_bar(full[train_index, ], "FamSize")
+```
+
+`TktSize` captures all travel partners - family members and others.  Again, traveling alone is bad for males, and traveling in a large group is bad.
+```{r}
+plot_bv_bar(full[train_index, ], "TktSize")
+```
+
+Maybe a good way to capture this is 
+
+```{r}
+full[train_index, ] %>%
+  count(Ticket, Sex, Survived) %>%
+  count(Sex, Survived, n) %>%
+  summarize(tot = sum(n))
+```
+
+
+
+## Survived ~ Numeric Predictor Relationships
+## Numeric Predictor Intervariable Correlations
+
+What are the correlations of the numeric variables with log survival odds?
+
+```{r}
+
+```
+
+
+
+Here is a visualization of the relationships.
+
+
+```{r}
+ggpairs(
+  full[train_index, c("Survived", preds_numeric)],
+  mapping = aes(color = Survived, alpha = 0.02),
+  columns = 2:(length(preds_numeric) + 1)
+)
+```
+
 
 ```{r message=FALSE}
-plot_ggpairs <- function(cols) {
-full[train_index, ] %>% 
+plot_ggpairs <- function(col) {
+full[train_index, mdl_vars] %>% 
   ggpairs(
-    mapping = aes(col = Survived, alpha = 0.2), 
-    columns = cols,
-    legend = c(1,1),
-    lower = list(combo = wrap("facethist", bins = 20))
+    mapping = aes(color = Survived, alpha = 0.2), 
+    columns = c(4, col),
+    legend = c(1,1)
   ) +
-  theme_minimal() +
-  theme(legend.position = "bottom") 
+  theme(legend.position = "top")
 }
-for(i in 0:6) {
-  print(plot_ggpairs(preds[(1:2) + 2*i]))
+for(i in c(2, 3, 5:15)) {
+  print(plot_ggpairs(i))
+}
+```
+
+
+```{r}
+plot_bv_box <- function(dat, num_var, color){
+  dat %>% 
+    ggplot(aes(y = !!sym(num_var)))
 }
 ```
 

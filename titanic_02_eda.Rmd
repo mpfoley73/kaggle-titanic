@@ -23,7 +23,7 @@ Conclusions:
 
 * Factor variables `Employee`, `Deck.A`, and `Title.Master` have near-zero-variance.
 
-* Nearly all of the quantitativ predictors suffer from skew.  It may make sense to transform these variables in modeling, especially for linear regression models.
+* Nearly all of the quantitative predictors suffer from skew.  It may make sense to transform these variables in modeling, especially for linear regression models.
 
 * `Sex` is by the far the best predictor of survival.  `Title` is second, but recall that it basically combines sex and age. `Pclass` is third. 
 
@@ -73,7 +73,7 @@ assertthat::are_equal(length(c(preds_factor, preds_numeric)), length(preds))
 
 ## Factor Variables
 
-Inspect each factor variable, looking for near-zero-variance (NZV). I might remove them in the modeling pre-process step to prevent zero-variance in cv folds. `caret::nearZeroVar()` defines NZV as a frequency ratio of the most common value to the second most common value frequency >= 19/5 and a unique value percentage <= 10%. (*DataCamp course Machine Learning Toolbox suggests more aggressive thresholds of frequency ratio >= 2 and unique value percentage <= 20%*).
+Inspect each factor variable, looking for near-zero-variance (NZV). I might remove them in the modeling pre-process step to prevent zero-variance in CV folds. `caret::nearZeroVar()` defines NZV as a frequency ratio of the most common value to the second most common value frequency >= 19/5 and a unique value percentage <= 10%. (*DataCamp course Machine Learning Toolbox suggests more aggressive thresholds of frequency ratio >= 2 and unique value percentage <= 20%*).
 
 ```{r warning=FALSE}
 dummies <- dummyVars(~., data = full[, preds_factor], fullRank = FALSE)
@@ -85,7 +85,7 @@ dummy_dat <- as.data.frame(predict(dummies, full[, preds_factor]))
 
 The problematic predictors are `Title = "Master"`, `Employee`, and `Deck = "A"`. 
 
-Here is a visualization of the data. Ideally, you want the vars to land in the top left quadrant.  
+Here is a visualization of the data. Ideally, you want the vars to land in the top left quadrant.  NZV are in the lower right quadrant.
 
 ```{r}
 nzv %>%
@@ -109,7 +109,7 @@ rm(dummies, dummy_dat, nzv)
 
 ## Quantitative Variables
 
-Skew can contribute to violation of linearity in linear regressions. I’ll check which variables have significant skew. Skew between 0.5 and 1.0 is generally considered moderate, and skew greater than 1 severe. In the following charts, neglibibly skewed predictors are colored theil, moderately skewed predictors are colored gold and the severely skewed predictors are colored red.
+Skew can contribute to violation of linearity in linear regressions. I’ll check which variables have significant skew. Skew between 0.5 and 1.0 is generally considered moderate, and skew greater than 1 severe. In the following charts, negligibly skewed predictors are colored theil (there are none), moderately skewed predictors are colored gold and the severely skewed predictors are colored red.
 
 ```{r message=FALSE}
 col_skew <- map(full[, preds_numeric], skewness) %>% unlist()
@@ -135,6 +135,12 @@ Nearly all of the quantitative predictors suffer from skew.  It may make sense t
 
 In this section I will look at inter-variable relationships. For factor variables, I am interested in which levels have significantly different log survival odds. For quantitative variables, I am looking for linear relationships with log survival odds and low correlations with each other.
 
+Conclusions:
+
+* `Sex` moderates `Pclass`, `Title`, `Embarked`, and `FamSize`.
+* `Deck` has very little separation among the levels - collapse it?
+
+
 Before I begin, let's see what variables are correlated with survival.
 
 ```{r cache=TRUE}
@@ -147,10 +153,63 @@ cor_out[, "Survived.Yes"] %>% abs() %>% sort(decreasing = TRUE) %>% head(11)
  
 `Sex` is by the far the best predictor of survival.  `Title` is second, but recall that it basically combines sex and age. `Pclass` is third.  The next best predictors are numeric: `NetSurv`, `FarePerPass`, `Fare`, and `TktSize`.  No surprises here - you're best bet for survival is to be a rich woman.  
 
+```{r}
+plot_surv_grp <- function(dat, x_grp, facet_grp){
+  dat %>%
+  group_by(!!sym(facet_grp), !!sym(x_grp)) %>%
+  summarize(n = n(), pct_surv = sum(if_else(Survived == "Yes", 1, 0)) / n()) %>%
+  mutate(logodds = round(pct_surv / (1 - pct_surv), 1)) %>%
+  ggplot(aes(x = !!sym(x_grp), y = logodds, label = logodds)) + 
+  geom_point(aes(color = n), size = 5) +
+  geom_text(size = 3, position = position_nudge(y = -1)) +
+  scale_color_steps(low = "goldenrod1", high = "goldenrod4") +
+  scale_y_continuous(labels = scales::number) +
+  labs(
+    title = paste0("LogOdds(Survived) ~ ", x_grp, " and ", facet_grp), 
+    y = ""
+  ) +
+  facet_wrap(facets = facet_grp)
+}
+
+model_bin <- function(dat, fmla) {
+  mdl <- train(
+    as.formula(fmla),
+    dat,
+    method = "glm", family = "binomial",
+    metric = "Accuracy",
+    trControl = trainControl(method = "cv", n = 10)      
+  )
+}
+
+plot_bin <- function(dat, x_var, facet_var, fmla) {
+  dat %>% 
+    group_by(!!sym(x_var), !!sym(facet_var), Survived, pred) %>%
+    summarize(n = n()) %>%
+    ungroup() %>% 
+    group_by(!!sym(x_var), !!sym(facet_var)) %>% 
+    mutate(
+      N = sum(n), 
+      prop = n / N,
+      odds = prop / (1 - prop),
+      log_odds = log(odds),
+      pred_log_odds = log(pred / (1 - pred))
+    ) %>%
+    filter(Survived == "Yes") %>%
+    ggplot(aes(x = !!sym(x_var))) +
+      geom_point(aes(y = log_odds, size = N), alpha = 0.6, color = "cadetblue") +
+      geom_point(aes(y = pred_log_odds), color = "goldenrod") +
+      theme(axis.text.x = element_text(angle = 90)) +
+#      scale_y_continuous(limits = c(-3.5, 3.5)) +
+      labs(title = fmla, x = x_var) +
+      facet_wrap(facets = facet_var)
+}
+```
+
 ## Survived ~ Factor Predictor Relationships
 
 Here are the survival rates grouped by the predictor variables.  I'm faceting by `Sex` because I know already the genders experienced different outcomes.  Which levels differ from others?  Do levels interact with `Sex`?
 
+Useful plot function.
 ```{r}
 plot_bv_bar <- function(dat, fct_var) {
   dat %>%
@@ -168,7 +227,23 @@ plot_bv_bar <- function(dat, fct_var) {
 }
 ```
 
-Third class passengers (`Pclass = 3`) had a rough go of it.  Males survival odds are cut in half when dropping to 2nd class, then stay about the same for 3rd class.  Female survival odds stayed the same for 2nd class, but halved when dropping to 3rd class.  N-size is small for the females though.  Looks like all three classes are important, but should be moderated by `Sex`.
+Third class passengers (`Pclass = 3`) had a rough go of it.  Male survival odds are cut in half when dropping to 2nd class, then stay about the same for 3rd class.  Female survival odds stayed the same for 2nd class, but halved when dropping to 3rd class.  N-size is small for the females though.  Looks like all three classes are important, but should be moderated by `Sex`.
+
+```{r}
+fmla <- "Survived ~ Pclass*Sex*AgeCohort"
+dat <- full[train_index, ]
+mdl <- full[train_index, ] %>% model_bin(fmla)
+dat$pred <- mdl$finalModel$fitted.values  
+plot_bin(dat, x_var = "Pclass", facet_var = "Sex", fmla = fmla)
+```
+
+
+```{r}
+full[train_index, ] %>% 
+  
+  plot_surv_grp("Pclass", "Sex")
+```
+
 
 ```{r}
 plot_bv_bar(full[train_index, ], "Pclass")
@@ -180,7 +255,7 @@ plot_bv_bar(full[train_index, ], "Pclass")
 plot_bv_bar(full[train_index, ], "Title")
 ```
 
-Embarking from Queenstown was a death sentence for males.  The port didn't have a strong effect for females.  `Embarked` should interasct with `Sex.
+Embarking from Queenstown was a death sentence for males.  The port didn't have a strong effect for females.  `Embarked` should interact with `Sex.
 ```{r}
 plot_bv_bar(full[train_index, ], "Embarked")
 ```
@@ -190,7 +265,7 @@ Employee has such a small n-size that it may not be a very useful variable. No f
 plot_bv_bar(full[train_index, ], "Employee")
 ```
 
-Generally, it's better to have a cabin on a deck at the top of the alphabet.  No interaction with `Sex`.
+Generally, it's better to have a cabin on a deck at the top of the alphabet.  No interaction with `Sex`.  Not a lot of separation among the decks, except maybe decks E & F vs others.  Deck A has a very low n-size.  Consider collapsing `Deck`.
 ```{r}
 plot_bv_bar(full[train_index, ], "Deck")
 ```
@@ -200,7 +275,7 @@ Traveling alone was deadly for males, not so much for females.  Good case for an
 plot_bv_bar(full[train_index, ], "FamSize")
 ```
 
-`TktSize` captures all travel partners - family members and others.  Again, traveling alone is bad for males, and traveling in a large group is bad.
+`TktSize` captures all travel partners - family members and others.  Survival odds increase when traveling with 2 and 3 others, then falls if gte4.
 ```{r}
 plot_bv_bar(full[train_index, ], "TktSize")
 ```
@@ -209,14 +284,124 @@ Maybe a good way to capture this is
 
 ```{r}
 full[train_index, ] %>%
-  count(Ticket, Sex, Survived) %>%
-  count(Sex, Survived, n) %>%
-  summarize(tot = sum(n))
+  count(TicketN, Sex, Survived) %>%
+  ggplot(aes(x = TicketN, y = n, fill = Survived)) + geom_col() + facet_wrap(~Sex)
+```
+
+
+```{r}
+dat <- full[train_index, ] %>%
+  count(Ticket, Sex) %>%
+  pivot_wider(names_from = "Sex", values_from = "n", names_prefix = "TicketN") %>%
+  replace_na(list(TicketNfemale = 0, TicketNmale = 0))
+full[train_index, ] %>%
+  left_join(dat, by = "Ticket") %>%
+  mutate(TktSexM = TicketNmale - if_else(Sex == "M", 1, 0),
+         TktSexF = TicketNfemale - if_else(Sex == "F", 1, 0)) %>%
+  select(-TicketNfemale, -TicketNfemale) %>%
+  count(Sex, TktSexM, TktSexF, Survived) %>%
+  pivot_longer(cols = c(TktSexM, TktSexF), names_to = "TktSex", values_to = "TktSexN") %>%
+  filter(Sex == "female") %>%
+  ggplot(aes(x = TktSexN, y = n, fill = Survived)) + geom_col() + facet_wrap(~TktSex)
 ```
 
 
 
 ## Survived ~ Numeric Predictor Relationships
+## Strength in Numbers?
+
+### Family Size
+The number of siblings plus spouse on board, `SibSp`, and number of parents and children on board, `Parch` present interesting possibilities.  Does *total* family size improve survival odds? 
+
+
+
+In general, survival odds fall with increasing family size, although the n-size is pretty small for families over three.  Men buck the trend a little - their surivorship is relatively low when traveling alone.  I'll make family size a factor variable, `FamSize`, with bins 1, 2, and 3+.  For modeling, it probably makes sense to have an interaction variable for `Title*Fsize`.
+
+```{r}
+full <- full %>%
+  mutate(
+    FamSize = if_else(SibSp + Parch + 1 >=3, 3, SibSp + Parch + 1),
+    FamSize = factor(FamSize, levels = c(1, 2, 3), labels = c("1", "2", "gte3"))
+  )
+
+full[train_index, ] %>% plot_surv_grp("FamSize", "Title")
+```
+
+### Ticket Size
+
+Is there a similar effect for the number of people in the party?
+
+```{r}
+full[train_index, ] %>% plot_surv_grp("TicketN", "Title")
+```
+
+In general, survival increase until party size of 4, then falls with increasing family size, although the n-size is pretty small for families over three.  Men buck the trend a little - their survivor odds are relatively low when traveling alone.  I'll make family size a factor variable, `Fsize`, with bins 1, 2, and 3+.  For modeling, it probably makes sense to have an interaction variable for `Title*Fsize`.
+
+```{r}
+full <- full %>% 
+  mutate(
+    TktSize = if_else(TicketN >= 4L, 4L, TicketN),
+    TktSize = factor(TktSize, levels = c(1, 2, 3, 4), labels = c("1", "2", "3", "gte4"))
+  )
+
+full[train_index, ] %>% plot_surv_grp("TktSize", "Title")
+```
+
+
+## Net Survivors
+
+Is the survivorship of the other passengers on the ticket predictive of your survivorship?  Create feature `TicketSurvN`.
+
+```{r}
+full <- full %>%
+  group_by(Ticket) %>%
+  mutate(
+    SurvN = sum(Survived == "Yes", na.rm = TRUE),
+    PrshN = sum(Survived == "No", na.rm = TRUE)
+  ) %>% 
+  ungroup() %>%
+  mutate(
+    SurvN = SurvN - if_else(!is.na(Survived) & Survived == "Yes", 1, 0),
+    PrshN = PrshN - if_else(!is.na(Survived) & Survived == "No", 1, 0),
+    NetSurv = SurvN - PrshN,
+  ) %>%
+  select(-SurvN, -PrshN)
+```
+
+```{r warning=FALSE, message=FALSE}
+plot_net_surv <- function() {
+  full[train_index, ] %>%
+    group_by(NetSurv, Sex) %>%
+    summarize(
+      n = n(), 
+      log_odds = log(mean(Survived == "Yes") / (1 - mean(Survived == "Yes")))
+    ) %>%
+    ggplot(aes(x = NetSurv, y = log_odds, color = Sex)) +
+    geom_point(aes(size = n)) +
+    geom_smooth(se = FALSE, method = "lm") +
+    theme_minimal() +
+    scale_color_brewer(palette = "Paired") +
+    theme(legend.position = "top") +
+    labs(title = "Survival log-odds if Others Survive", color = "")
+}
+plot_net_surv()
+```
+
+It certainly does appear to be predictive.  The tails are thinly populated and the linearity breaks down.  I can probably collapse the tails.
+
+```{r}
+full[train_index, ] %>% group_by(NetSurv) %>% summarize(n = n(), mean = mean(Survived == "Yes"))
+```
+
+I'll collapse bins [-6, -1] and [1, 3].
+
+```{r}
+full$NetSurv <- map_dbl(full$NetSurv, max, -1)
+full$NetSurv <- map_dbl(full$NetSurv, min, 1)
+plot_net_surv()
+```
+
+
 ## Numeric Predictor Intervariable Correlations
 
 What are the correlations of the numeric variables with log survival odds?
@@ -318,39 +503,7 @@ The conclusions from this section are:
 Define handy functions for this analysis.
 
 ```{r}
-model_bin <- function(dat, fmla) {
-  mdl <- train(
-    as.formula(fmla),
-    dat,
-    method = "glm", family = "binomial",
-    metric = "Accuracy",
-    trControl = trainControl(method = "cv", n = 10)      
-  )
-}
 
-plot_bin <- function(dat, x, fmla) {
-  dat %>% 
-    group_by(Sex, !!sym(x), Survived) %>%
-    summarize(n = n(), mean_p = mean(p)) %>%
-    ungroup() %>% 
-    group_by(Sex, !!sym(x)) %>% 
-    mutate(
-      N = sum(n), 
-      prop = n / N,
-      odds = prop / (1 - prop),
-      log_odds = log(odds),
-      mean_p = mean(mean_p, na.rm = TRUE),
-      p_odds = log(mean_p / (1 - mean_p))
-    ) %>%
-    filter(Survived == "Yes") %>%
-    ggplot(aes(x = !!sym(x), fill = N)) +
-      geom_col(aes(y = log_odds)) +
-      geom_point(aes(y = p_odds)) +
-      theme(axis.text.x = element_text(angle = 90)) +
-      scale_y_continuous(limits = c(-3.5, 3.5)) +
-      labs(title = fmla, x = x) +
-      facet_wrap(~Sex)
-}
 ```
 
 ## Age

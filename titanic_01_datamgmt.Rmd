@@ -287,52 +287,11 @@ Separate `Name` into `Surname`, `Title`, `Name`.
 
 ```{r}
 full <- full %>% 
-   separate(Name, ", ", into = c("Surname", "Name")) %>%
-   separate(Name, "\\. ", into = c("Title", "Name"), extra = "merge")
+  separate(Name, ", ", into = c("Surname", "Name")) %>%
+  separate(Name, "\\. ", into = c("Title", "Name"), extra = "merge") %>%
+  mutate(Title = factor(Title))
 
 full %>% count(Title, sort = TRUE) 
-```
-
-There are 18 titles. If I turn them all into dummies, most will have near-zero variance.  From the documentation in `caret::nearZeroVar()`, a near zero var is one that is <10% unique and the frequency ratio to the second-most common value is > 95/5 = 19.  For dummy vars, the second-most common value is just the negation, so I can easily calculate both these metrics.
-
-```{r}
-check_nzv <- function(dat, col) {
-  dat %>% count(!!sym(col), sort = TRUE) %>%
-    mutate(
-      unique = round(n / sum(n), 2),
-      ratio = n / (sum(n) - n),
-      ratio = round(if_else(ratio < 1, 1 / ratio, ratio), 0),
-      nzv = if_else(unique < 0.10 & ratio > 19, "Yes", "No")
-    )
-}
-full %>% check_nzv("Title")
-```
-
-Only the first 3 have-non-zero variance.  "Master" nearly makes the cut.  The top 4 comprise 98% of the rows.  "Mlle" (mademoiselle) and "Ms" both mean "Miss".  "Mme" means "Mrs".  I'll merge these synonyms.  The remaining items will comprise a very small proportion of values, so even grouping them into "Other" will make the factor NZV.  I'll take some guesses for them.
-
-```{r}
-full <- full %>%
-  mutate(
-    Title = case_when(
-      Title %in% c("Mlle", "Ms") ~ "Miss",
-      Title == "Mme" ~ "Mrs",
-      Title %in% c("Miss", "Mrs", "Mr", "Master") ~ Title,
-      Title %in% c("Dr", "Rev", "Major", "Col", "Capt") & Sex == "male" ~ "Mr",
-      Title %in% c("Dr") & Sex == "female" ~ "Mrs",
-      Title == "Lady" & Age >= 30 ~ "Mrs",
-      Title %in% c("Don", "Sir", "Jonkheer") ~ "Mr",
-      Title %in% c("the Countess", "Dona") ~ "Mrs",
-      TRUE ~ Title
-    ),
-    Title = parse_factor(Title)
-  ) 
-full %>% check_nzv("Title")
-```
-
-So basically this variable classifies men, women, boys, and girls. (I wonder how valuable that is given the `Sex` and `Age` variables already in the data set).  `Surname` has 875 unique values, so the average party size is a little less than 2.  Not sure what I can do with `Surname`.
-
-```{r}
-n_distinct(full$Surname)
 ```
 
 ## Cabin -> Deck

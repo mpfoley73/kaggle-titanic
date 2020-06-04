@@ -39,6 +39,7 @@ library(e1071)  # for skewness()
 library(broom)  # for tidy()
 library(GGally) # for ggpairs()
 library(gridExtra) 
+library(janitor)
 ```
 
 
@@ -172,8 +173,6 @@ plot_bin <- function(dat, x_var, facet_var, fmla) {
     summarize(n = n()) %>%
     pivot_wider(names_from = "Survived", values_from = n, names_prefix = "Survived.") %>%
     replace_na(list(Survived.No = 0, Survived.Yes = 0)) %>%
-    # ungroup() %>% 
-    # group_by(!!sym(x_var), !!sym(facet_var)) %>% 
     mutate(
       N = Survived.No + Survived.Yes,
       prop = Survived.Yes / N,
@@ -185,121 +184,234 @@ plot_bin <- function(dat, x_var, facet_var, fmla) {
       pred_log_odds = log(pred / (1 - pred))
     ) %>%
     ggplot(aes(x = !!sym(x_var))) +
-      geom_point(aes(y = log_odds, size = N), alpha = 0.6, color = "cadetblue") +
-      geom_point(aes(y = pred_log_odds), color = "goldenrod") +
+      geom_point(aes(y = log_odds, size = N, color = "Actual"), alpha = 0.6) +
+      geom_point(aes(y = pred_log_odds, color = "Predicted")) +
+      scale_color_manual(values = c("cadetblue", "goldenrod")) +
       theme(axis.text.x = element_text(angle = 90)) +
 #      scale_y_continuous(limits = c(-3.5, 3.5)) +
-      labs(title = fmla, x = x_var) +
+      labs(title = fmla, x = x_var, color = "") +
       facet_wrap(facets = facet_var)
 }
 ```
 
+
+## Sex
+
+In the training data set, 19% of males survived and 74% of the females survived.  We should get 74-81% accuracy just by predicting all males perish and all females survive.
+
+```{r}
+tabyl(full[train_index, ], Sex, Survived) %>%
+  adorn_totals(where = c("row", "col")) %>%
+  adorn_percentages() %>% adorn_pct_formatting() %>% adorn_ns() %>%
+  adorn_title("combined") %>%
+  knitr::kable()
+```
+
+
 ## Age
 
-Here is the survival log-odds for `Age`.  Children of both sexes had relatively good survival odds.  For males, the children distort a generally positive relationship with age.  The female relationship seems okay.
+Here is the survival log-odds for `Age`.  Children of both sexes had relatively good survival odds.  For males, the children reverse a generally positive relationship with age.  The female relationship seems okay.
 
 ```{r}
 fmla <- "Survived ~ Sex*Age"
-dat <- full[train_index, ]
+dat <- full[train_index, ] %>% mutate(age_bin = cut(Age, 16))
 mdl <- dat %>% model_bin(fmla)
 dat$pred <- mdl$finalModel$fitted.values  
-plot_bin(dat, x_var = "Age", facet_var = "Sex", fmla = fmla)
+plot_bin(dat, x_var = "age_bin", facet_var = "Sex", fmla = fmla)
 ```
 
-So maybe there should be an `AgeCohort` factor variable that moderates `Age`.
+So maybe there should be an `AgeCohort = c(lte10, gt10)` factor variable that moderates `Age`.
 
 ```{r}
 fmla <- "Survived ~ Sex*Age*AgeCohort"
-dat <- full[train_index, ] %>%
-  mutate(AgeCohort = factor(if_else(Age <= 10, "lte10", "gt10")))
+dat <- full[train_index, ] %>% 
+  mutate(
+    AgeCohort = factor(if_else(Age <= 10, "lte10", "gt10")),
+    AgeBin = cut(Age, 16)
+  )
 mdl <- dat %>% model_bin(fmla)
 dat$pred <- mdl$finalModel$fitted.values  
-plot_bin(dat, x_var = "Age", facet_var = "Sex", fmla = fmla)
-dat %>% filter(Sex == "male") %>% count(Age, Survived) %>% pivot_wider(names_from = "Survived", values_from = "n")
+plot_bin(dat, x_var = "AgeBin", facet_var = "Sex", fmla = fmla)
+```
+Better.  I'll create the `AgeCohort` predictor and plan to interact it with `Age` and `Sex` since the slopes differ.
+
+```{r}
+full <- full %>%
+  mutate(AgeCohort = factor(if_else(Age <= 10, "lte10", "gt10"), 
+                            levels = c("lte10", "gt10")))
 ```
 
+## Title
 
+Title is closely related to `Sex` and `Age`.  Is it still useful?  
+
+Here is the sex/age breakdown. 53-54% of children survive (same for males and females). Over age 10, 17% of males survive and 77% of females survive.
+
+```{r}
+full[train_index, ] %>% 
+  tabyl(AgeCohort, Survived, Sex) %>%
+  adorn_totals(where = c("row", "col")) %>%
+  adorn_percentages() %>% adorn_pct_formatting() %>% adorn_ns() %>%
+  adorn_title("combined") %>%
+  knitr::kable()
+```
+
+Combining `AgeCorhort` and `Title`, 34/40 "Master" are under age 10, and 515/517 "Mr" are over age 10.  "Miss" has less separation: 147/182 "Miss" are over age 10. I suspect "Miss" means *any* female who has not yet married.
+
+```{r}
+full[train_index, ] %>% 
+  tabyl(Title, Survived, AgeCohort) %>%
+  adorn_totals(where = c("row", "col")) %>%
+  adorn_percentages() %>% adorn_pct_formatting() %>% adorn_ns() %>%
+  adorn_title("combined") %>%
+  knitr::kable()
+```
+
+So, do passengers with a title other than Master/Miss/Mrs/Mr have a better chance of surviving?  A little: 44% of titled persons survived compared to 38% of untitled.  But only 27/891 = 3% of passengers have a title.
+
+```{r}
+full[train_index, ] %>% 
+  mutate(HasTitle = if_else(Title %in% c("Mr", "Mrs", "Master", "Miss"), "No", "Yes")) %>%
+  tabyl(HasTitle, Survived) %>%
+  adorn_totals(where = c("row", "col")) %>%
+  adorn_percentages() %>% adorn_pct_formatting() %>% adorn_ns() %>%
+  adorn_title("combined") %>%
+  knitr::kable()
+```
+
+I think the conclusion here is that `Title` is redundant to `AgeCohort` and `Sex` and I should not include it in the models.
 
 ## Pclass
 
 Third class passengers (`Pclass = 3`) had a rough go of it.  Male survival odds are cut in half when dropping to 2nd class, then stay about the same for 3rd class.  Female survival odds stayed the same for 2nd class, but halved when dropping to 3rd class.  N-size is small for the females though.  Looks like all three classes are important, but should be moderated by `Sex`.
 
 ```{r}
-fmla <- "Survived ~ Pclass*Sex*AgeCohort"
+fmla <- "Survived ~ Pclass*Sex"
 dat <- full[train_index, ]
-mdl <- full[train_index, ] %>% model_bin(fmla)
+mdl <- dat %>% model_bin(fmla)
 dat$pred <- mdl$finalModel$fitted.values  
 plot_bin(dat, x_var = "Pclass", facet_var = "Sex", fmla = fmla)
 ```
 
+## TicketN
+
+Traveling with with others helps - but only to a point!  Both male and female survival odds increase with ticket size to n = 4, then they fall.
 
 ```{r}
-full[train_index, ] %>% 
-  
-  plot_surv_grp("Pclass", "Sex")
+fmla <- "Survived ~ TicketN + Sex"
+dat <- full[train_index, ]
+mdl <- dat %>% model_bin(fmla)
+dat$pred <- mdl$finalModel$fitted.values  
+plot_bin(dat, x_var = "TicketN", facet_var = "Sex", fmla = fmla)
+```
+
+How about a dummy variable `TicketNCohort = c("lte4", "gt4")`.
+
+```{r}
+fmla <- "Survived ~ TicketN*TicketNCohort + Sex"
+dat <- full[train_index, ] %>%
+  mutate(TicketNCohort = factor(if_else(TicketN <= 4, "lte4", "gt4")))
+mdl <- dat %>% model_bin(fmla)
+dat$pred <- mdl$finalModel$fitted.values  
+plot_bin(dat, x_var = "TicketN", facet_var = "Sex", fmla = fmla)
+```
+
+Better.  I'll create the `TicketNCohort` predictor and plan to interact it with `TicketN`.
+
+```{r}
+full <- full %>%
+  mutate(TicketNCohort = factor(if_else(TicketN <= 4, "lte4", "gt4"), 
+                            levels = c("lte4", "gt4")))
 ```
 
 
-```{r}
-plot_bv_bar(full[train_index, ], "Pclass")
-```
+## SibSp
 
-`Title` is mostly a combination of `Age` and `Sex`.  The survival rates for females do not change by title, but title is important for the males.  If `Title` is in the model, it should interact with `Sex`.
+Survival odds fall with increasing numbers of spouse+siblings.  Maybe people made sure at least on child in a family got aboard a raft.  Males traveling with no spouse or sibling is a conspicuously frequent and dubious group. 
 
 ```{r}
-plot_bv_bar(full[train_index, ], "Title")
+fmla <- "Survived ~ SibSp + Sex"
+dat <- full[train_index, ]
+mdl <- full[train_index, ] %>% model_bin(fmla)
+dat$pred <- mdl$finalModel$fitted.values  
+plot_bin(dat, x_var = "SibSp", facet_var = "Sex", fmla = fmla)
 ```
 
-Embarking from Queenstown was a death sentence for males.  The port didn't have a strong effect for females.  `Embarked` should interact with `Sex.
+Including the newly-created `TicketNCohort` variable seems to help.
+
 ```{r}
-plot_bv_bar(full[train_index, ], "Embarked")
+fmla <- "Survived ~ SibSp + Sex + TicketN*TicketNCohort"
+dat <- full[train_index, ]
+mdl <- full[train_index, ] %>% model_bin(fmla)
+dat$pred <- mdl$finalModel$fitted.values  
+plot_bin(dat, x_var = "SibSp", facet_var = "Sex", fmla = fmla)
 ```
+
+No actions need to be taken with this variable - just include it in the model as-is.
+
+## Parch
+
+Survival odds fall with increasing numbers of parents and children.  Again, males traveling alone are in trouble. 
+
+```{r}
+fmla <- "Survived ~ Parch + Sex"
+dat <- full[train_index, ]
+mdl <- full[train_index, ] %>% model_bin(fmla)
+dat$pred <- mdl$finalModel$fitted.values  
+plot_bin(dat, x_var = "Parch", facet_var = "Sex", fmla = fmla)
+```
+
+Including the newly-created `TicketNCohort` variable seems to help.  Hard to tell, actually.
+
+```{r}
+fmla <- "Survived ~ Parch + Sex + TicketN*TicketNCohort"
+dat <- full[train_index, ]
+mdl <- full[train_index, ] %>% model_bin(fmla)
+dat$pred <- mdl$finalModel$fitted.values  
+plot_bin(dat, x_var = "Parch", facet_var = "Sex", fmla = fmla)
+```
+
+No actions need to be taken with this variable - just include it in the model as-is.
+
+## Embarked
+
+Embarking from Queenstown was a death sentence for males for some reason.  `Embarked` should interact with `Sex.
+
+```{r}
+fmla <- "Survived ~ Embarked*Sex"
+dat <- full[train_index, ]
+mdl <- dat %>% model_bin(fmla)
+dat$pred <- mdl$finalModel$fitted.values  
+plot_bin(dat, x_var = "Embarked", facet_var = "Sex", fmla = fmla)
+```
+
+## FarePerPass
+
+Here is the survival log-odds for `FarePerPass`.  I don't really see much of a relationship.  I think the thing to do is to leave the variable along, include it in the model and see what happens.
+
+```{r}
+fmla <- "Survived ~ Sex + FarePerPass"
+dat <- full[train_index, ] %>% mutate(FarePerPassBin = cut(FarePerPass, 10))
+mdl <- dat %>% model_bin(fmla)
+dat$pred <- mdl$finalModel$fitted.values  
+plot_bin(dat, x_var = "FarePerPassBin", facet_var = "Sex", fmla = fmla)
+```
+
+
+## Employee
+## Deck
+
 
 Employee has such a small n-size that it may not be a very useful variable. No females were employees.
-```{r}
-plot_bv_bar(full[train_index, ], "Employee")
-```
+
 
 Generally, it's better to have a cabin on a deck at the top of the alphabet.  No interaction with `Sex`.  Not a lot of separation among the decks, except maybe decks E & F vs others.  Deck A has a very low n-size.  Consider collapsing `Deck`.
-```{r}
-plot_bv_bar(full[train_index, ], "Deck")
-```
+
 
 Traveling alone was deadly for males, not so much for females.  Good case for an interaction effect.
 ```{r}
-plot_bv_bar(full[train_index, ], "FamSize")
+#plot_bv_bar(full[train_index, ], "FamSize")
 ```
-
-`TktSize` captures all travel partners - family members and others.  Survival odds increase when traveling with 2 and 3 others, then falls if gte4.
-```{r}
-plot_bv_bar(full[train_index, ], "TktSize")
-```
-
-Maybe a good way to capture this is 
-
-```{r}
-full[train_index, ] %>%
-  count(TicketN, Sex, Survived) %>%
-  ggplot(aes(x = TicketN, y = n, fill = Survived)) + geom_col() + facet_wrap(~Sex)
-```
-
-
-```{r}
-dat <- full[train_index, ] %>%
-  count(Ticket, Sex) %>%
-  pivot_wider(names_from = "Sex", values_from = "n", names_prefix = "TicketN") %>%
-  replace_na(list(TicketNfemale = 0, TicketNmale = 0))
-full[train_index, ] %>%
-  left_join(dat, by = "Ticket") %>%
-  mutate(TktSexM = TicketNmale - if_else(Sex == "M", 1, 0),
-         TktSexF = TicketNfemale - if_else(Sex == "F", 1, 0)) %>%
-  select(-TicketNfemale, -TicketNfemale) %>%
-  count(Sex, TktSexM, TktSexF, Survived) %>%
-  pivot_longer(cols = c(TktSexM, TktSexF), names_to = "TktSex", values_to = "TktSexN") %>%
-  filter(Sex == "female") %>%
-  ggplot(aes(x = TktSexN, y = n, fill = Survived)) + geom_col() + facet_wrap(~TktSex)
-```
-
 
 
 ## Survived ~ Numeric Predictor Relationships

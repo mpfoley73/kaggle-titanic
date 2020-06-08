@@ -21,13 +21,12 @@ This is a survey of the Titanic data.  The univariate analysis characterizes the
 
 Conclusions:
 
-* Factor variables `Employee`, `Deck.A`, and `Title.Master` have near-zero-variance.
-
-* Nearly all of the quantitative predictors suffer from skew.  It may make sense to transform these variables in modeling, especially for linear regression models.
-
-* `Sex` is by the far the best predictor of survival.  `Title` is second, but recall that it basically combines sex and age. `Pclass` is third. 
-
-* Define an `AgeCohort` predictor for age bins (<16, 16-48, >48).  For linear models, `AgeCohort` should interact with `Age` and `Sex` as `Age*Sex*AgeCohort`. Linear models may also benefit from an interaction between `Sex` and `FamSize`, and between `Sex` and `NetSurv`.
+* Factor variables `Title` and `Employee` have near-zero-variance.
+* Nearly all of the quantitative predictors suffer from skew.
+* `Sex` moderates `Pclass` and `Embarked`.
+* Created grouping variable `AgeCohort`. It should interact with `Age` and `Sex`.
+* Created grouping variable `TicketNCohort`.  It should interact with `TicketN`.
+* Created net survivors predictor `NetSurv` with values truncated at -1 and +1.
 
 
 # Setup
@@ -57,6 +56,12 @@ glimpse(full)
 
 In this section I will look at data distributions. For factor variables, I am interested in which have near-zero-variance. For quantitative variables, I am looking for significant skew. 
 
+Conclusions from this section are:
+
+* Factor variables `Title` and `Employee` have near-zero-variance.
+* Nearly all of the quantitative predictors suffer from skew.
+
+
 It will be handy to classify the predictors by data type.
 
 ```{r}
@@ -84,7 +89,7 @@ dummy_dat <- as.data.frame(predict(dummies, full[, preds_factor]))
 )
 ```
 
-The problematic predictors are `Title`, `Employee`, and `Deck = "A"`. 
+The problematic predictors are `Title` and `Employee`. 
 
 Here is a visualization of the data. Ideally, you want the vars to land in the top left quadrant.  NZV are in the lower right quadrant.
 
@@ -110,7 +115,7 @@ rm(dummies, dummy_dat, nzv)
 
 ## Quantitative Variables
 
-Skew can contribute to violation of linearity in linear regressions. I’ll check which variables have significant skew. Skew between 0.5 and 1.0 is generally considered moderate, and skew greater than 1 severe. In the following charts, negligibly skewed predictors are colored theil (there are none), moderately skewed predictors are colored gold and the severely skewed predictors are colored red.
+Skew can contribute to violation of linearity in linear regressions. I’ll check which variables have significant skew. Skew between 0.5 and 1.0 is generally considered moderate, and skew greater than 1 severe. In the following charts, negligibly skewed predictors are colored teal (there are none), moderately skewed predictors are colored gold and the severely skewed predictors are colored red.
 
 ```{r message=FALSE}
 col_skew <- map(full[, preds_numeric], skewness) %>% unlist()
@@ -138,13 +143,10 @@ In this section I will look at inter-variable relationships. For factor variable
 
 Conclusions:
 
-* `Sex` moderates `Pclass`, `Title`, `Embarked`, and `FamSize`.
-* Create grouping variable `AgeCohort`. It should interact with `Age` and `Sex`.
-* `Title` is redundant to `AgeCohort` and `Sex` and I should not include it in the models.
-* `Pclass` should interact with `Sex`.
-* Create grouping variable `TicketNCohort`.  It should interact with `TicketN`.
-* `Embarked` should interact with `Sex`.
-* Create net survivors predictor `NetSurv` with values truncated at -1 and +1.
+* `Sex` moderates `Pclass` and `Embarked`.
+* Created grouping variable `AgeCohort`. It should interact with `Age` and `Sex`.
+* Created grouping variable `TicketNCohort`.  It should interact with `TicketN`.
+* Created net survivors predictor `NetSurv` with values truncated at -1 and +1.
 
 
 Before I begin, let's get some initial perspective which variables are correlated with survival.

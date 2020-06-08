@@ -27,7 +27,6 @@ This file handles the data management and feature engineering.  I got a lot of i
 ```{r message=FALSE}
 library(tidyverse)
 library(caret)
-library(mfstylr)
 library(mice)
 library(janitor)
 ```
@@ -235,7 +234,6 @@ plot_prof <- function(hline, subtitle){
     geom_boxplot(na.rm = TRUE) +
     geom_hline(yintercept = hline, linetype = 2) +
     scale_y_continuous(labels = scales::dollar) +
-    theme_mf() +
     scale_color_brewer(palette = "Paired") +
     labs(
       y = "Fare",
@@ -268,7 +266,6 @@ data.frame(full = full$Age, mice = mice_cmpl$Age) %>%
   pivot_longer(cols = c("full", "mice"), names_to = "Data", values_to= "Age") %>%
   ggplot(aes(x = Age, color = Data)) + 
   geom_density(na.rm = TRUE) +
-  theme_mf() +
   labs(title = "Age Distribution", color = "")
 ```
 

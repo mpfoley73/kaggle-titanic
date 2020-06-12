@@ -560,7 +560,22 @@ mdl_vars <- c("Survived", preds)
 skimr::skim(full[, mdl_vars])
 ```
 
+For the modeling phase, I'll split the `full` data set into `training` and `testing`, then 80:20 split `training` into `training_80` for training and `training_20` as a holdout set to compare models.
+
 ```{r}
-save(full, train_index, preds, mdl_vars, file = "./titanic_02.RData")
+training <- full[train_index, ]
+testing <- full[-train_index, ]
+ 
+set.seed(1920)
+partition <- createDataPartition(training$Survived, p = 0.80, list = FALSE)[, 1]
+training_80 <- training[partition, ]
+training_20 <- training[-partition, ]
+```
+
+Save the objects for the modeling.
+
+```{r}
+save(full, train_index, training, testing, training_80, training_20, 
+     preds, mdl_vars, file = "./titanic_02.RData")
 ```
 

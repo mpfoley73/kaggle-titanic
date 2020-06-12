@@ -1,6 +1,6 @@
 ---
 title: "Kaggle - Titanic"
-subtitle: "Step 3: Regularization"
+subtitle: "Step 4: Regularization"
 author: "Michael Foley"
 date: "6/11/2020"
 output: 
@@ -35,9 +35,9 @@ and elastic net minimizes the loss function
 
 $$L = \frac{\sum_{i = 1}^n \left(y_i - x_i^{'} \hat\beta \right)^2}{2n} + \lambda \frac{1 - \alpha}{2}\sum_{j=1}^k \hat{\beta}_j^2 + \lambda \alpha\left| \hat{\beta}_j \right|.$$
 
-The logistic model run with the final set of predictors had a holdout set accuracy of 0.8305, sensitivity of 0.6029, specificity of 0.9725, and AUC of 0.8821.
+The best model was ridge.  The model run with the final set of predictors had a holdout set accuracy of 0.8272.
 
-After fitting to the full training data set, the performance on the testing data set on kaggle was 0.78947 accuracy.
+After fitting to the full training data set, the performance on the testing data set on kaggle was 0.77511 accuracy.
 
 
 # Setup
@@ -50,45 +50,34 @@ library(plotROC)
 library(precrec)
 ```
 
-The initial data management created the data set `full`, with training rows indexed by `train_index`.  I added another predictor variable in the exploratory analysis.  I'll split this into `training` and `testing`, then 80:20 split `training` into `training_80` for training and `training_20` to compare models.
+The initial data management created the data set `full`, with training rows indexed by `train_index`.  I added another predictor variables in the exploratory analysis and split the data into `training` and `testing`, then 80:20 split `training` into `training_80` for training and `training_20` to compare models.
 
 ```{r warning=FALSE, message=FALSE}
 load("./titanic_02.RData")
-
-training <- full[train_index, ]
-testing <- full[-train_index, ]
- 
-set.seed(1920)
-partition <- createDataPartition(training$Survived, p = 0.80, list = FALSE)
-training_80 <- training[partition, ]
-training_20 <- training[-partition, ]
-rm(partition)
 ```
 
-I'm using 10-fold CV, but it may be interesting to [compare with bootstrapping](http://appliedpredictivemodeling.com/blog/2014/11/27/08ks7leh0zof45zpf5vqe56d1sahb0) and other strategies. 
+I'll use 10-fold CV. 
 
 ```{r}
 train_control <- trainControl(
-#  method = "boot", number = 25,
   method = "cv", number = 10,
   savePredictions = "final",
-  classProbs = TRUE #,                 # return predicted classes AND probabilities
-#  summaryFunction = twoClassSummary  # calculate sensitivity, specificity, and AUC
+  classProbs = TRUE
 )
 ```
 
-I'll try two models: a "full" model with (almost) all predictors, and a parsimonious model using `glmStepAIC`.  
+I'll try three models: ridge, lasso, and elastic net.  
 
 # Model
 
-By "all predictors", I mean all non-character predictors - I'm throwing out `Surname`, `Name`, `Ticket`, and `Cabin`.  I'm also throwing out `Fare` since it is redundant to `FarePerPass`, and `TicketN` since I binned it into `TktSize`.  That leaves me with `PassengerID`, `Survived`, and 13 predictors.
+My model data set variables are `PassengerID`, `Survived`, and 13 predictors.
 
 ```{r}
 mdl_vars <- c("PassengerId", mdl_vars)
 mdl_vars
 ```
 
-I'll use the recipe method to train.  From the exploratory analysis section I've decided to create interactions `FamSize:Sex`, `NetSurv:Sex`, and `Age*AgeCohort*Sex`.  My formula also removes dummy variable `Title_Miss` to avoid rank deficiency - I think `Title` and `Sex` are somewhat redundant.  I'm also adding some other interaction terms
+I'll use the recipe method to train.  From the exploratory analysis section I've decided to create interactions `Pclass*Sex`, `Embarked*Sex`, `TicketN:TicketNCohort`, and `Age*AgeCohort*Sex`. My recipe will also center and scale the predictors because it improves performance for the regularization algorithms.
 
 ```{r}
 rcpe <- recipe(Survived ~ ., data = training_80[, mdl_vars]) %>%
@@ -107,9 +96,9 @@ prep(rcpe, training = training_80)
 
 # Ridge
 
-The ridge model run with the full set of predictors had a holdout set accuracy of 0.8192, sensitivity of 0.6029, specificity of 0.9541, and AUC of 0.8821.
+The ridge model had a holdout set accuracy of 0.8079, sensitivity of 0.5735, specificity of 0.9541, and AUC of 0.8783.
 
-Here is the fit summary.
+Fit the ridge model by specifying tuning parameter `alpha = 0` (meaning percentage mix between ridge and lasso as 0% lasso). I set up the tuning grid for `lambda` with a little trial and error. Here is the fit summary.
 
 ```{r}
 set.seed(1970)
@@ -127,14 +116,14 @@ mdl_ridge <- train(
 )
 mdl_ridge$bestTune
 ```
-`Parch`, `FarePerPass`, `Embarked`, and `Employee` fail the significance test.  `varImp()` ranks the coefficients by the absolute value of the coefficients.  `NetSurv` is most important.
-
-The summary output shows the model did not tune alpha because I held it at 1 for lasso regression. The optimal tuning values (at the minimum RMSE) were alpha = 1 and lambda = 0.65.  You can see the RMSE minimum on the the plot.
+The best tuning parameter is `lambda = 0.02`, so almost no penalty on the coefficient estimator sizes. You can see the relationship between accuracy and `lambda` in the plot.
 
 ```{r}
 ggplot(mdl_ridge) +
   labs(title = "Ridge Regression Parameter Tuning", x = "lambda")
 ```
+
+`varImp()` ranks the predictors by the absolute value of the coefficients in the tuned model. The most important variable here was `Sex`. In the straight logistic regression model, it was `NetSurv`, followed by `Pclass`.
 
 ```{r}
 varImp(mdl_ridge)
@@ -142,12 +131,7 @@ varImp(mdl_ridge)
 
 ## Resampling Performance
 
-The model performance on the 10-fold resampling was:
-
-```{r}
-mdl_ridge
-```
-The sensitivity is 0.918 and the specificity is 0.701, so the model is prone to *over-predicting* survivors.  The area under the ROC curve is 0.885.  The accuracy from the confusion matrix below is 0.8347.
+The accuracy from the confusion matrix is 0.8389.
 
 ```{r}
 confusionMatrix(mdl_ridge)
@@ -162,7 +146,7 @@ predicted_classes <- predict(mdl_ridge, newdata = training_20)
 predicted_probs <- predict(mdl_ridge, newdata = training_20, type = "prob")
 confusionMatrix(predicted_classes, training_20$Survived, positive = "Yes")
 ```
-The sensitivity is 0.6029 and the specificity is 0.9541, so the model is prone to *under-predicting* survivors.  The accuracy from the confusion matrix is 0.8192.  `precrec::evalmod()` will calculate the confusion matrix values from the model using the holdout data set.  The AUC on the holdout set is 0.8821.  [`pRoc::plot.roc()` and `plotROC::geom_roc()`](https://stackoverflow.com/questions/31138751/roc-curve-from-training-data-in-caret) are options, but I like the way `yardstick::roc_curve()` looks.
+The sensitivity is 0.5735 and the specificity is 0.9541, so the model is prone to *under-predicting* survivors.  The accuracy from the confusion matrix is 0.8079.  `precrec::evalmod()` will calculate the confusion matrix values from the model using the holdout data set.  The AUC on the holdout set is 0.8783.
 
 ```{r}
 mdl_ridge_preds <- predict(mdl_ridge, newdata = training_20, type = "prob")
@@ -180,7 +164,7 @@ data.frame(
   autoplot() +
   labs(
     title = "Ridge Model ROC Curve, Test Data",
-    subtitle = "AUC = 0.8821"
+    subtitle = "AUC = 0.8783"
   )
 ```
 
@@ -190,7 +174,7 @@ The gain curve plots the cumulative summed true outcome versus the fraction of i
 
 * The gain curve encountered 34 survivors (50%) within the first 37 observations (21%). 
 
-* It encountered all 68 survivors on the 157th observation (89%).
+* It encountered the 68th survivor on the 160th observation (90%).
 
 * The bottom of the gray area is the outcome of a random model. Only half the survivors would be observed within 50% of the observations. The top of the gray area is the outcome of the perfect model, the “wizard curve”. Half the survivors would be observed in 68/177=38% of the observations.
 
@@ -206,156 +190,48 @@ data.frame(
   )
 ```
 
-```{r}
-glmnPlot <- plot(mdl_ridge,
-                 plotType = "level",
-                 cuts = 15,
-                 scales = list(x = list(rot = 90, cex = .65)))
-```
 
-# glmStepAIC
+# Lasso
 
-Let's try this again with stepwise regression to see how a more parsimonious model might perform.
+The lasso model had a holdout set accuracy of 0.8136 - a little better than ridge's 0.8079, sensitivity of 0.6176, specificity of 0.9358, and AUC of 0.8522.
+
+Fit the lasso model by specifying tuning parameter `alpha = 1` (meaning percentage mix between ridge and lasso as 100% lasso). I set up the tuning grid for `lambda` with a little trial and error. Here is the fit summary.
 
 ```{r}
 set.seed(1970)
-mdl_step <- train(
+mdl_lasso <- train(
   rcpe,
   training_80[, mdl_vars],
-  method = "glmStepAIC",
-  family = "binomial",
-  trace = FALSE,  # suppress the iteration summaries
-  trControl = train_control,
-  metric = "ROC"
-)
-summary(mdl_step)
-```
-`glmStepAIC` dropped `Parch`, `FarePerPass`, `Embarked`, `Employee`, most of the `Deck` dummies (although it kept `DeckC`), and the sex interaction with one level of `Pclass` and one level of `Embarked`.
-
-## Resampling Performance
-
-The model performance on the 10-fold resampling was:
-
-```{r}
-mdl_step
-```
-The sensitivity is 0.9159 and the specificity is 0.6862, so the model is prone to *over-predicting* survivors.  The area under the ROC curve is 0.8792.  The accuracy from the confusion matrix below is 0.8277.
-
-```{r}
-confusionMatrix(mdl_step)
-```
-
-## Holdout Performance
-
-Here is the model performance on the holdout data set.
-
-```{r}
-predicted_classes <- predict(mdl_step, newdata = training_20) 
-predicted_probs <- predict(mdl_step, newdata = training_20, type = "prob")
-confusionMatrix(predicted_classes, training_20$Survived, positive = "Yes")
-```
-The sensitivity is 0.6029 and the specificity is 0.9633, so the model is prone to *under-predicting* survivors.  The accuracy from the confusion matrix is 0.8249 - *higher* than the full model!  `precrec::evalmod()` will calculate the confusion matrix values from the model using the holdout data set.  The AUC on the holdout set is 0.8821.
-
-```{r}
-mdl_step_preds <- predict(mdl_step, newdata = training_20, type = "prob")
-(mdl_step_eval <- evalmod(
-  scores = mdl_step_preds$Yes,
-  labels = training_20$Survived
-))
-
-options(yardstick.event_first = FALSE)  # set the second level as success
-data.frame(
-  pred = mdl_step_preds$Yes, 
-  obs = training_20$Survived
-) %>%
-  yardstick::roc_curve(obs, pred) %>%
-  autoplot() +
-  labs(
-    title = "glmStepAIC Model ROC Curve, Test Data",
-    subtitle = "AUC = 0.8847"
-  )
-```
-
-Here is the gain curve again.
-
-68 of the 177 passengers in the holdout set survived.
-
-* The gain curve encountered 34 survivors (50%) within the first 36 observations (20%). 
-
-* It encountered all 68 survivors on the 150th observation (85%).
-
-```{r}
-data.frame(
-  pred = mdl_step_preds$Yes, 
-  obs = training_20$Survived
-) %>%
-  yardstick::gain_curve(obs, pred) %>%
-  autoplot() +
-  labs(
-    title = "glmStepAIC Model Gain Curve on Holdout Set"
-  )
-```
-
-
-# Final Model
-
-The stepwise regression actually performed better than the full model (surprising - can multicollinearity reduce predictive accuracy on the holdout?).  I don't want to just use the stepwise model though, because it keeps selected factor variable levels, and if I'm going to keep one level, I want the entire factor variable.  So I'll fit this one more time, just dropping the variables where `glmStepAIC` dropped the entire variable.
-
-First I'll fit it with the `training_80` set, just so I can compare.  Then I'll do a final fit to the entire `training` set to predict on `testing`.
-
-```{r}
-mdl_vars_final <- subset(mdl_vars, !mdl_vars %in% c("Parch", "FarePerPass", "Employee"))
-rcpe_final <- recipe(Survived ~ ., data = training_80[, mdl_vars_final]) %>%
-  update_role(PassengerId, new_role = "id variable") %>%
-  step_dummy(all_nominal(), -all_outcomes()) %>%
-  step_center(Age, SibSp, TicketN, NetSurv) %>%
-  step_scale(Age, SibSp, TicketN, NetSurv) %>%
-  step_interact(terms = ~
-                  starts_with("Sex_"):starts_with("Pclass_") +
-                  starts_with("Sex_"):starts_with("Embarked_") +
-                  TicketN:starts_with("TicketNCohort_") +
-                  Age:starts_with("AgeCohort_"):starts_with("Sex_")) 
-
-prep(rcpe_final, training = training_80)
-```
-
-The logistic model run with the final set of predictors had a holdout set accuracy of 0.8305, sensitivity of 0.6029, specificity of 0.9725, and AUC of 0.8821.
-
-Here is the fit summary.
-
-```{r}
-set.seed(1970)
-mdl_final_train <- train(
-  rcpe_final,
-  training_80[, mdl_vars_final],
   method = "glmnet",
   family = "binomial",
   tuneGrid = expand.grid(
-    .alpha = 0,  # optimize a ridge regression
-    .lambda = seq(0, 2, length.out = 101)
+    .alpha = 1,  # optimize a lasso regression
+    .lambda = seq(0, 1, length.out = 101)
   ),
   trControl = train_control,
   metric = "Accuracy"
 )
-mdl_final_train$bestTune
+mdl_lasso$bestTune
 ```
-`NetSurv` continues to be the most important predictor.
+The best tuning parameter is `lambda = 0.04`, so almost no penalty on the coefficient estimator sizes. You can see the relationship between accuracy and `lambda` in the plot.
 
 ```{r}
-varImp(mdl_final_train)
+ggplot(mdl_lasso) +
+  labs(title = "Lasso Regression Parameter Tuning", x = "lambda")
+```
+
+The most important variable was `Sex` again, then relative importance drops quickly.  Second place goes to `Pclass` and then `NetSurv`. In ridge, second place was `Embarked`. Lasso looks more like the straight logistic regression model.
+
+```{r}
+varImp(mdl_lasso)
 ```
 
 ## Resampling Performance
 
-The model performance on the 10-fold resampling was:
+The accuracy from the confusion matrix is 0.8319 - a little worse than ridge's 0.8389.
 
 ```{r}
-mdl_final_train
-```
-The sensitivity is 0.9250 and the specificity is 0.7007, so the model is prone to *over-predicting* survivors.  The area under the ROC curve is 0.8856.  The accuracy from the confusion matrix below is 0.8389.
-
-```{r}
-confusionMatrix(mdl_final_train)
+confusionMatrix(mdl_lasso)
 ```
 
 ## Holdout Performance
@@ -363,49 +239,162 @@ confusionMatrix(mdl_final_train)
 Here is the model performance on the holdout data set.
 
 ```{r}
-predicted_classes <- predict(mdl_final_train, newdata = training_20) 
-predicted_probs <- predict(mdl_final_train, newdata = training_20, type = "prob")
+predicted_classes <- predict(mdl_lasso, newdata = training_20) 
+predicted_probs <- predict(mdl_lasso, newdata = training_20, type = "prob")
 confusionMatrix(predicted_classes, training_20$Survived, positive = "Yes")
 ```
-The sensitivity is 0.6029 and the specificity is 0.9725, so the model is prone to *under-predicting* survivors.  The accuracy from the confusion matrix is 0.8305. The AUC on the holdout set is 0.8821.
+
+The sensitivity is 0.6176 and the specificity is 0.9358.  The accuracy is 0.8136 - a little better than ridge's 0.8079. The AUC on the holdout set is 0.8522.
 
 ```{r}
-mdl_final_train_preds <- predict(mdl_final_train, newdata = training_20, type = "prob")
-(mdl_final_train_eval <- evalmod(
-  scores = mdl_final_train_preds$Yes,
+mdl_lasso_preds <- predict(mdl_lasso, newdata = training_20, type = "prob")
+(mdl_lasso_eval <- evalmod(
+  scores = mdl_lasso_preds$Yes,
   labels = training_20$Survived
 ))
 
 options(yardstick.event_first = FALSE)  # set the second level as success
 data.frame(
-  pred = mdl_final_train_preds$Yes, 
+  pred = mdl_lasso_preds$Yes, 
   obs = training_20$Survived
 ) %>%
   yardstick::roc_curve(obs, pred) %>%
   autoplot() +
   labs(
-    title = "Final Model (Training) ROC Curve, Test Data",
-    subtitle = "AUC = 0.8774"
+    title = "Lasso Model ROC Curve, Test Data",
+    subtitle = "AUC = 0.8522"
   )
 ```
+
+Here is the gain curve. 
 
 68 of the 177 passengers in the holdout set survived.
 
 * The gain curve encountered 34 survivors (50%) within the first 37 observations (21%). 
 
-* It encountered all 68 survivors on the 156th observation (88%).
+* It encountered the 68th survivor on the 158th observation (89%).
 
 ```{r}
 data.frame(
-  pred = mdl_final_train_preds$Yes, 
+  pred = mdl_lasso_preds$Yes, 
   obs = training_20$Survived
 ) %>%
   yardstick::gain_curve(obs, pred) %>%
   autoplot() +
   labs(
-    title = "Final Model (Training) Gain Curve on Holdout Set"
+    title = "Lasso Model Gain Curve on Holdout Set"
   )
 ```
+
+# Elastic Net
+
+The lasso model had a holdout set accuracy of 0.8136 - a little better than ridge's 0.8079, sensitivity of 0.6176, specificity of 0.9358, and AUC of 0.8522.
+
+Fit the elastic net model by tuning both `lambda` and `alpha`. I set up the tuning grid with by trial and error. Here is the fit summary.
+
+```{r}
+set.seed(1970)
+mdl_elnet <- train(
+  rcpe,
+  training_80[, mdl_vars],
+  method = "glmnet",
+  family = "binomial",
+  tuneGrid = expand.grid(
+    .alpha = seq(0, 1, length.out = 11),  # optimize an elastic net regression
+    .lambda = seq(0, 1, length.out = 101)
+  ),
+  trControl = train_control,
+  metric = "Accuracy"
+)
+mdl_elnet$bestTune
+```
+The best tuning parameter is `alpha = 0` and `lambda = 0.04`, so no mixing at all (100% ridge) and almost no penalty on the coefficient estimator sizes.
+
+```{r}
+ggplot(mdl_elnet) +
+  labs(title = "Elastic Net Regression Parameter Tuning", x = "lambda")
+```
+
+This might be a better way of looking at it. The AUC is maximized with very little regularization. As regularization increases, the ridge model performs relatively well compared to lasso.
+
+```{r}
+glmnPlot <- plot(mdl_elnet,
+                 plotType = "level",
+                 cuts = 15,
+                 scales = list(x = list(rot = 90, cex = .65)))
+update(glmnPlot,
+       ylab = "Mixing Percentage\nRidge <---------> Lasso",
+       sub = "",
+       main = "Area Under the ROC Curve",
+       xlab = "Amount of Regularization")
+```
+
+The most important variable was `Sex` again.
+
+```{r}
+varImp(mdl_elnet)
+```
+
+## Resampling Performance
+
+The accuracy from the confusion matrix is 0.8389 - same as ridge.
+
+```{r}
+confusionMatrix(mdl_elnet)
+```
+
+## Holdout Performance
+
+Here is the model performance on the holdout data set.
+
+```{r}
+predicted_classes <- predict(mdl_elnet, newdata = training_20) 
+predicted_probs <- predict(mdl_elnet, newdata = training_20, type = "prob")
+confusionMatrix(predicted_classes, training_20$Survived, positive = "Yes")
+```
+
+The sensitivity is 0.5735 and the specificity is 0.9541  The accuracy is 0.8079 - same as ridge. The AUC on the holdout set is 0.8733.
+
+```{r}
+mdl_elnet_preds <- predict(mdl_elnet, newdata = training_20, type = "prob")
+(mdl_elnet_eval <- evalmod(
+  scores = mdl_elnet_preds$Yes,
+  labels = training_20$Survived
+))
+
+options(yardstick.event_first = FALSE)  # set the second level as success
+data.frame(
+  pred = mdl_elnet_preds$Yes, 
+  obs = training_20$Survived
+) %>%
+  yardstick::roc_curve(obs, pred) %>%
+  autoplot() +
+  labs(
+    title = "Elastic Net Model ROC Curve, Test Data",
+    subtitle = "AUC = 0.8733"
+  )
+```
+
+Here is the gain curve. 
+
+68 of the 177 passengers in the holdout set survived.
+
+* The gain curve encountered 34 survivors (50%) within the first 37 observations (21%). 
+
+* It encountered the 68th survivor on the 158th observation (89%).
+
+```{r}
+data.frame(
+  pred = mdl_elnet_preds$Yes, 
+  obs = training_20$Survived
+) %>%
+  yardstick::gain_curve(obs, pred) %>%
+  autoplot() +
+  labs(
+    title = "Elastic Net Model Gain Curve on Holdout Set"
+  )
+```
+
 
 # Conclusions
 
@@ -413,9 +402,9 @@ Compare the models with `evalmod()`.
 
 ```{r}
 scores_list <- join_scores(
-  predict(mdl_full, newdata = training_20, type = "prob")$Yes,
-  predict(mdl_step, newdata = training_20, type = "prob")$Yes,
-  predict(mdl_final_train, newdata = training_20, type = "prob")$Yes
+  predict(mdl_ridge, newdata = training_20, type = "prob")$Yes,
+  predict(mdl_lasso, newdata = training_20, type = "prob")$Yes,
+  predict(mdl_elnet, newdata = training_20, type = "prob")$Yes
 )
 labels_list <- join_labels(
   training_20$Survived,
@@ -426,7 +415,7 @@ labels_list <- join_labels(
 pe <- evalmod(
   scores = scores_list, 
   labels = labels_list,
-  modnames = c("Full", "glmStepAIC", "Final (Training)"),
+  modnames = c("Ridge", "Lasso", "Elastic Net"),
   posclass = "Yes")
 
 autoplot(pe, "ROC")
@@ -435,35 +424,39 @@ autoplot(pe, "ROC")
 ```{r}
 pe
 ```
-The highest AUC was with the first, full model.
+The highest AUC was with ridge.
 
 ```{r}
-resamps <- resamples(list('Full' = mdl_full, 
-                          'Reduced' = mdl_step,
-                          'Final' = mdl_final_train))
+resamps <- resamples(list('Ridge' = mdl_ridge, 
+                          'Lasso' = mdl_lasso,
+                          'Elastic Net' = mdl_elnet))
 summary(resamps)
 bwplot(resamps, layout = c(3, 1))
 ```
 
 # Refit Final Model
 
-I'll do a final fit to the entire `training` set to predict on `testing`.
+I'll do a final fit with the ridge model to the entire `training` set to predict on `testing`.
 
 Here is the fit summary.
 
 ```{r}
 set.seed(1970)
 mdl_final <- train(
-  rcpe_final,
-  training[, mdl_vars_final],
-  method = "glm",
+  rcpe,
+  training[, mdl_vars],
+  method = "glmnet",
   family = "binomial",
+  tuneGrid = expand.grid(
+    .alpha = 0,  # optimize a ridge regression
+    .lambda = seq(0, 2, length.out = 101)
+  ),
   trControl = train_control,
-  metric = "ROC"
+  metric = "Accuracy"
 )
-summary(mdl_final)
+mdl_final$bestTune
 ```
-`NetSurv` continues to be the most important predictor.
+`Sex` continues to be the most important predictor.
 
 ```{r}
 varImp(mdl_final)
@@ -471,12 +464,7 @@ varImp(mdl_final)
 
 ## Resampling Performance
 
-The model performance on the 10-fold resampling was:
-
-```{r}
-mdl_final
-```
-The sensitivity is 0.9034 and the specificity is 0.6989, so the model is prone to *over-predicting* survivors.  The area under the ROC curve is 0.8876.  The accuracy from the confusion matrix below is 0.8249.
+The accuracy from the confusion matrix below is 0.8272.
 
 ```{r}
 confusionMatrix(mdl_final)
@@ -487,7 +475,7 @@ confusionMatrix(mdl_final)
 ```{r}
 preds <- predict(mdl_final, newdata = testing) %>% {ifelse(. == "Yes", 1, 0)}
 sub_file <- data.frame(PassengerId = testing$PassengerId, Survived = preds)
-write.csv(sub_file, file = "./titanic_03_glm.csv", row.names = FALSE)
+write.csv(sub_file, file = "./titanic_04_glmnet.csv", row.names = FALSE)
 ```
 
 

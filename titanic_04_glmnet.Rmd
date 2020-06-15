@@ -35,9 +35,9 @@ and elastic net minimizes the loss function
 
 $$L = \frac{\sum_{i = 1}^n \left(y_i - x_i^{'} \hat\beta \right)^2}{2n} + \lambda \frac{1 - \alpha}{2}\sum_{j=1}^k \hat{\beta}_j^2 + \lambda \alpha\left| \hat{\beta}_j \right|.$$
 
-The best model was ridge.  The model run with the final set of predictors had a holdout set accuracy of 0.8272.
+The best model was elastic net. The model run on the full training data set had a holdout set accuracy of 0.8305.
 
-After fitting to the full training data set, the performance on the testing data set on kaggle was 0.77511 accuracy.
+After fitting to the full training data set, the performance on the testing data set on kaggle was 0.78468 accuracy - a half percent worse than the straight logistic regression 0.78947 accuracy.
 
 
 # Setup
@@ -77,14 +77,15 @@ mdl_vars <- c("PassengerId", mdl_vars)
 mdl_vars
 ```
 
-I'll use the recipe method to train.  From the exploratory analysis section I've decided to create interactions `Pclass*Sex`, `Embarked*Sex`, `TicketN:TicketNCohort`, and `Age*AgeCohort*Sex`. My recipe will also center and scale the predictors because it improves performance for the regularization algorithms.
+I'll use the recipe method to train.  From the exploratory analysis section I've decided to create interactions `Pclass*Sex`, `Embarked*Sex`, `TicketN:TicketNCohort`, and `Age*AgeCohort*Sex`. My recipe does *not* center and scale the predictors because the `glmnet()` algorithm will do it automatically.
 
 ```{r}
 rcpe <- recipe(Survived ~ ., data = training_80[, mdl_vars]) %>%
   update_role(PassengerId, new_role = "id variable") %>%
   step_dummy(all_nominal(), -all_outcomes()) %>%
-  step_center(Age, SibSp, Parch, TicketN, FarePerPass, NetSurv) %>%
-  step_scale(Age, SibSp, Parch, TicketN, FarePerPass, NetSurv) %>%
+  # model will center/scale - don't do it here
+  # step_center(Age, SibSp, Parch, TicketN, FarePerPass, NetSurv) %>%
+  # step_scale(Age, SibSp, Parch, TicketN, FarePerPass, NetSurv) %>%
   step_interact(terms = ~
                   starts_with("Sex_"):starts_with("Pclass_") +
                   starts_with("Sex_"):starts_with("Embarked_") +
@@ -96,11 +97,11 @@ prep(rcpe, training = training_80)
 
 # Ridge
 
-The ridge model had a holdout set accuracy of 0.8079, sensitivity of 0.5735, specificity of 0.9541, and AUC of 0.8783.
+The ridge model had a holdout set accuracy of 0.8249, sensitivity of 0.6324, specificity of 0.9450, and AUC of 0.8768.
 
 Fit the ridge model by specifying tuning parameter `alpha = 0` (meaning percentage mix between ridge and lasso as 0% lasso). I set up the tuning grid for `lambda` with a little trial and error. Here is the fit summary.
 
-```{r}
+```{r message=FALSE}
 set.seed(1970)
 mdl_ridge <- train(
   rcpe,
@@ -116,14 +117,14 @@ mdl_ridge <- train(
 )
 mdl_ridge$bestTune
 ```
-The best tuning parameter is `lambda = 0.02`, so almost no penalty on the coefficient estimator sizes. You can see the relationship between accuracy and `lambda` in the plot.
+The best tuning parameter is `lambda = 0.04`, so almost no penalty on the coefficient estimator sizes. You can see the relationship between accuracy and `lambda` in the plot.
 
 ```{r}
 ggplot(mdl_ridge) +
   labs(title = "Ridge Regression Parameter Tuning", x = "lambda")
 ```
 
-`varImp()` ranks the predictors by the absolute value of the coefficients in the tuned model. The most important variable here was `Sex`. In the straight logistic regression model, it was `NetSurv`, followed by `Pclass`.
+`varImp()` ranks the predictors by the absolute value of the coefficients in the tuned model. The most important variable here was `AgeCohort`. In the straight logistic regression model, it was `NetSurv`, followed by `Pclass`.
 
 ```{r}
 varImp(mdl_ridge)
@@ -146,7 +147,7 @@ predicted_classes <- predict(mdl_ridge, newdata = training_20)
 predicted_probs <- predict(mdl_ridge, newdata = training_20, type = "prob")
 confusionMatrix(predicted_classes, training_20$Survived, positive = "Yes")
 ```
-The sensitivity is 0.5735 and the specificity is 0.9541, so the model is prone to *under-predicting* survivors.  The accuracy from the confusion matrix is 0.8079.  `precrec::evalmod()` will calculate the confusion matrix values from the model using the holdout data set.  The AUC on the holdout set is 0.8783.
+The sensitivity is 0.6324 and the specificity is 0.9450, so the model is prone to *under-predicting* survivors.  The accuracy from the confusion matrix is 0.8249.  `precrec::evalmod()` will calculate the confusion matrix values from the model using the holdout data set.  The AUC on the holdout set is 0.8768.
 
 ```{r}
 mdl_ridge_preds <- predict(mdl_ridge, newdata = training_20, type = "prob")
@@ -174,7 +175,7 @@ The gain curve plots the cumulative summed true outcome versus the fraction of i
 
 * The gain curve encountered 34 survivors (50%) within the first 37 observations (21%). 
 
-* It encountered the 68th survivor on the 160th observation (90%).
+* It encountered the 68th survivor on the 163th observation (92%).
 
 * The bottom of the gray area is the outcome of a random model. Only half the survivors would be observed within 50% of the observations. The top of the gray area is the outcome of the perfect model, the “wizard curve”. Half the survivors would be observed in 68/177=38% of the observations.
 
@@ -193,7 +194,7 @@ data.frame(
 
 # Lasso
 
-The lasso model had a holdout set accuracy of 0.8136 - a little better than ridge's 0.8079, sensitivity of 0.6176, specificity of 0.9358, and AUC of 0.8522.
+The lasso model had a holdout set accuracy of 0.8305 - a little better than ridge's 0.8249, sensitivity of 0.6618, specificity of 0.9358, and AUC of 0.8651.
 
 Fit the lasso model by specifying tuning parameter `alpha = 1` (meaning percentage mix between ridge and lasso as 100% lasso). I set up the tuning grid for `lambda` with a little trial and error. Here is the fit summary.
 
@@ -213,14 +214,14 @@ mdl_lasso <- train(
 )
 mdl_lasso$bestTune
 ```
-The best tuning parameter is `lambda = 0.04`, so almost no penalty on the coefficient estimator sizes. You can see the relationship between accuracy and `lambda` in the plot.
+The best tuning parameter is `lambda = 0.02`, so again almost no penalty on the coefficient estimator sizes. You can see the relationship between accuracy and `lambda` in the plot.
 
 ```{r}
 ggplot(mdl_lasso) +
   labs(title = "Lasso Regression Parameter Tuning", x = "lambda")
 ```
 
-The most important variable was `Sex` again, then relative importance drops quickly.  Second place goes to `Pclass` and then `NetSurv`. In ridge, second place was `Embarked`. Lasso looks more like the straight logistic regression model.
+The most important variable was `Sex`, then relative importance drops quickly.  Second place goes to `NetSurv`. In ridge, second place was `AgeCohort`, then `Sex`. Lasso looks more like the straight logistic regression model.
 
 ```{r}
 varImp(mdl_lasso)
@@ -228,7 +229,7 @@ varImp(mdl_lasso)
 
 ## Resampling Performance
 
-The accuracy from the confusion matrix is 0.8319 - a little worse than ridge's 0.8389.
+The accuracy from the confusion matrix is 0.8375 - a little worse than ridge's 0.8389.
 
 ```{r}
 confusionMatrix(mdl_lasso)
@@ -244,7 +245,7 @@ predicted_probs <- predict(mdl_lasso, newdata = training_20, type = "prob")
 confusionMatrix(predicted_classes, training_20$Survived, positive = "Yes")
 ```
 
-The sensitivity is 0.6176 and the specificity is 0.9358.  The accuracy is 0.8136 - a little better than ridge's 0.8079. The AUC on the holdout set is 0.8522.
+The sensitivity is 0.6618 and the specificity is 0.9358.  The accuracy is 0.8305 - a little better than ridge's 0.8249. The AUC on the holdout set is 0.8651.
 
 ```{r}
 mdl_lasso_preds <- predict(mdl_lasso, newdata = training_20, type = "prob")
@@ -272,7 +273,7 @@ Here is the gain curve.
 
 * The gain curve encountered 34 survivors (50%) within the first 37 observations (21%). 
 
-* It encountered the 68th survivor on the 158th observation (89%).
+* It encountered the 68th survivor on the 159th observation (89%).
 
 ```{r}
 data.frame(
@@ -288,7 +289,7 @@ data.frame(
 
 # Elastic Net
 
-The lasso model had a holdout set accuracy of 0.8136 - a little better than ridge's 0.8079, sensitivity of 0.6176, specificity of 0.9358, and AUC of 0.8522.
+The elastic net model had a holdout set accuracy of 0.8249 - same as ridge, sensitivity of 0.6324, specificity of 0.9450, and AUC of 0.8783.
 
 Fit the elastic net model by tuning both `lambda` and `alpha`. I set up the tuning grid with by trial and error. Here is the fit summary.
 
@@ -308,7 +309,7 @@ mdl_elnet <- train(
 )
 mdl_elnet$bestTune
 ```
-The best tuning parameter is `alpha = 0` and `lambda = 0.04`, so no mixing at all (100% ridge) and almost no penalty on the coefficient estimator sizes.
+The best tuning parameter is `alpha = 0` and `lambda = 0.03`, so no mixing at all (100% ridge) and almost no penalty on the coefficient estimator sizes.
 
 ```{r}
 ggplot(mdl_elnet) +
@@ -329,7 +330,7 @@ update(glmnPlot,
        xlab = "Amount of Regularization")
 ```
 
-The most important variable was `Sex` again.
+The most important variable was `AgeCohort` again.
 
 ```{r}
 varImp(mdl_elnet)
@@ -337,7 +338,7 @@ varImp(mdl_elnet)
 
 ## Resampling Performance
 
-The accuracy from the confusion matrix is 0.8389 - same as ridge.
+The accuracy from the confusion matrix is 0.8403 - a little better than ridge.
 
 ```{r}
 confusionMatrix(mdl_elnet)
@@ -353,7 +354,7 @@ predicted_probs <- predict(mdl_elnet, newdata = training_20, type = "prob")
 confusionMatrix(predicted_classes, training_20$Survived, positive = "Yes")
 ```
 
-The sensitivity is 0.5735 and the specificity is 0.9541  The accuracy is 0.8079 - same as ridge. The AUC on the holdout set is 0.8733.
+The sensitivity is 0.6324 and the specificity is 0.9450.  The accuracy is 0.8249 - same as ridge. The AUC on the holdout set is 0.8783.
 
 ```{r}
 mdl_elnet_preds <- predict(mdl_elnet, newdata = training_20, type = "prob")
@@ -381,7 +382,7 @@ Here is the gain curve.
 
 * The gain curve encountered 34 survivors (50%) within the first 37 observations (21%). 
 
-* It encountered the 68th survivor on the 158th observation (89%).
+* It encountered the 68th survivor on the 163th observation (92%).
 
 ```{r}
 data.frame(
@@ -424,7 +425,7 @@ autoplot(pe, "ROC")
 ```{r}
 pe
 ```
-The highest AUC was with ridge.
+The highest AUC was with elastic net. Elastic net also had the bestmedian accuracy.
 
 ```{r}
 resamps <- resamples(list('Ridge' = mdl_ridge, 
@@ -436,7 +437,7 @@ bwplot(resamps, layout = c(3, 1))
 
 # Refit Final Model
 
-I'll do a final fit with the ridge model to the entire `training` set to predict on `testing`.
+I'll do a final fit with the elastic net model to the entire `training` set to predict on `testing`.
 
 Here is the fit summary.
 
@@ -448,15 +449,15 @@ mdl_final <- train(
   method = "glmnet",
   family = "binomial",
   tuneGrid = expand.grid(
-    .alpha = 0,  # optimize a ridge regression
-    .lambda = seq(0, 2, length.out = 101)
+    .alpha = 0.0,
+    .lambda = 0.03
   ),
   trControl = train_control,
   metric = "Accuracy"
 )
 mdl_final$bestTune
 ```
-`Sex` continues to be the most important predictor.
+`AgeCohort` continues to be the most important predictor.
 
 ```{r}
 varImp(mdl_final)
@@ -464,7 +465,7 @@ varImp(mdl_final)
 
 ## Resampling Performance
 
-The accuracy from the confusion matrix below is 0.8272.
+The accuracy from the confusion matrix below is 0.8305.
 
 ```{r}
 confusionMatrix(mdl_final)

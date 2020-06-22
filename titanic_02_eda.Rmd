@@ -164,20 +164,10 @@ cor_out[, "Survived.Yes"] %>% abs() %>% sort(decreasing = TRUE) %>% head(11)
 For this analysis I'll define a plotting function with a logistic regression fit, and an odds ratio table function.
 
 ```{r}
-model_bin <- function(dat, fmla) {
-  mdl <- train(
-    as.formula(fmla),
-    dat,
-    method = "glm", family = "binomial",
-    metric = "Accuracy",
-    trControl = trainControl(method = "cv", n = 10)      
-  )
-}
-
 plot_bin <- function(dat, x_var, facet_var, fmla) {
-  dat %>% 
-    group_by(!!sym(x_var), !!sym(facet_var), Survived, pred) %>%
-    summarize(n = n()) %>%
+  actual <- dat %>% 
+    group_by(!!sym(x_var), !!sym(facet_var), Survived) %>%
+    summarize(n = n(), .groups = "drop") %>%
     pivot_wider(names_from = "Survived", values_from = n, names_prefix = "Survived.") %>%
     replace_na(list(Survived.No = 0, Survived.Yes = 0)) %>%
     mutate(
@@ -187,16 +177,20 @@ plot_bin <- function(dat, x_var, facet_var, fmla) {
       log_odds = log(odds),
       log_odds = case_when(log_odds == -Inf ~ -3, 
                            log_odds ==  Inf ~  3, 
-                           TRUE ~ log_odds),
-      pred_log_odds = log(pred / (1 - pred))
-    ) %>%
-    ggplot(aes(x = !!sym(x_var))) +
-      geom_point(aes(y = log_odds, size = N, color = "Actual"), alpha = 0.6) +
-      geom_point(aes(y = pred_log_odds, color = "Predicted")) +
-      scale_color_manual(values = c("cadetblue", "goldenrod")) +
-      theme(axis.text.x = element_text(angle = 90)) +
-      labs(title = fmla, x = x_var, color = "") +
-      facet_wrap(facets = facet_var)
+                           TRUE ~ log_odds)
+    )
+  predicted <- dat %>%
+    mutate(pred_log_odds = log(pred / (1 - pred))) %>%
+    group_by(!!sym(x_var), !!sym(facet_var), pred_log_odds) %>%
+    summarize(N = n(), .groups = "drop")
+
+  p <- ggplot(actual, aes(x = !!sym(x_var), y = log_odds, size = N, color = "Actual")) +
+    geom_point(alpha = 0.6) +
+    scale_color_manual(values = c("cadetblue", "goldenrod")) +
+    theme(axis.text.x = element_text(angle = 90)) +
+    labs(title = fmla, x = "AgeBin", color = "") +
+    facet_wrap(facets = facet_var)
+  p + geom_point(dat = predicted, aes(x = !!sym(x_var), y = pred_log_odds, color = "Predicted"))
 }
 
 write_tab <- function(dat, group_var){
@@ -245,8 +239,8 @@ Here is the survival log-odds for `Age`.  Children of both sexes had relatively 
 ```{r}
 fmla <- "Survived ~ Sex*Age"
 dat <- full[train_index, ] %>% mutate(age_bin = cut(Age, 16))
-mdl <- dat %>% model_bin(fmla)
-dat$pred <- mdl$finalModel$fitted.values  
+mdl <- glm(fmla, family = "binomial", data = dat)
+dat$pred <- mdl$fitted.values
 plot_bin(dat, x_var = "age_bin", facet_var = "Sex", fmla = fmla)
 ```
 
@@ -259,13 +253,44 @@ dat <- full[train_index, ] %>%
     AgeCohort = factor(if_else(Age <= 10, "lte10", "gt10")),
     AgeBin = cut(Age, 16)
   )
-mdl <- dat %>% model_bin(fmla)
-dat$pred <- mdl$finalModel$fitted.values  
+mdl <- glm(fmla, family = "binomial", data = dat)
+dat$pred <- mdl$fitted.values
 plot_bin(dat, x_var = "AgeBin", facet_var = "Sex", fmla = fmla)
-tidy(mdl$finalModel) %>% flextable::regulartable() %>% 
+tidy(mdl) %>% flextable::regulartable() %>% 
   flextable::colformat_num(j = 2:5, digits = 3) %>%
   flextable::autofit()
 ```
+
+```{r}
+actual <-  dat %>% 
+    group_by(AgeBin, Sex, Survived, AgeCohort) %>%
+    summarize(n = n(), .groups = "drop") %>%
+    pivot_wider(names_from = "Survived", values_from = n, names_prefix = "Survived.") %>%
+    replace_na(list(Survived.No = 0, Survived.Yes = 0)) %>%
+    mutate(
+      N = Survived.No + Survived.Yes,
+      prop = Survived.Yes / N,
+      odds = prop / (1 - prop),
+      log_odds = log(odds),
+      log_odds = case_when(log_odds == -Inf ~ -3, 
+                           log_odds ==  Inf ~  3, 
+                           TRUE ~ log_odds)
+    )
+predicted <- dat %>%
+  mutate(pred_log_odds = log(pred / (1 - pred))) %>%
+  group_by(AgeBin, Sex, pred_log_odds) %>%
+  summarize(N = n(), .groups = "drop")
+
+p <- ggplot(actual, aes(x = AgeBin, y = log_odds, size = N, color = "Actual")) +
+      geom_point(alpha = 0.6) +
+      scale_color_manual(values = c("cadetblue", "goldenrod")) +
+      theme(axis.text.x = element_text(angle = 90)) +
+      labs(title = fmla, x = "AgeBin", color = "") +
+      facet_wrap(facets = "Sex")
+p
+p + geom_point(dat = predicted, aes(x = AgeBin, y = pred_log_odds, color = "Predicted"))
+```
+
 Better.  I'll create the `AgeCohort` predictor and plan to interact it with `Age` and `Sex` since the slopes differ.
 
 ```{r}
@@ -335,8 +360,8 @@ Third class passengers (`Pclass = 3`) had a rough go of it.  Male survival odds 
 ```{r}
 fmla <- "Survived ~ Pclass*Sex"
 dat <- full[train_index, ]
-mdl <- dat %>% model_bin(fmla)
-dat$pred <- mdl$finalModel$fitted.values  
+mdl <- glm(fmla, family = "binomial", data = dat)
+dat$pred <- mdl$fitted.values
 plot_bin(dat, x_var = "Pclass", facet_var = "Sex", fmla = fmla)
 ```
 
@@ -347,8 +372,8 @@ Traveling with with others helps - but only to a point!  Both male and female su
 ```{r}
 fmla <- "Survived ~ TicketN + Sex"
 dat <- full[train_index, ]
-mdl <- dat %>% model_bin(fmla)
-dat$pred <- mdl$finalModel$fitted.values  
+mdl <- glm(fmla, family = "binomial", data = dat)
+dat$pred <- mdl$fitted.values
 plot_bin(dat, x_var = "TicketN", facet_var = "Sex", fmla = fmla)
 ```
 
@@ -358,8 +383,8 @@ How about a dummy variable `TicketNCohort = c("lte4", "gt4")`.
 fmla <- "Survived ~ TicketN*TicketNCohort + Sex"
 dat <- full[train_index, ] %>%
   mutate(TicketNCohort = factor(if_else(TicketN <= 4, "lte4", "gt4")))
-mdl <- dat %>% model_bin(fmla)
-dat$pred <- mdl$finalModel$fitted.values  
+mdl <- glm(fmla, family = "binomial", data = dat)
+dat$pred <- mdl$fitted.values
 plot_bin(dat, x_var = "TicketN", facet_var = "Sex", fmla = fmla)
 ```
 
@@ -379,8 +404,8 @@ Survival odds fall with increasing numbers of spouse+siblings.  Maybe people mad
 ```{r}
 fmla <- "Survived ~ SibSp + Sex"
 dat <- full[train_index, ]
-mdl <- full[train_index, ] %>% model_bin(fmla)
-dat$pred <- mdl$finalModel$fitted.values  
+mdl <- glm(fmla, family = "binomial", data = dat)
+dat$pred <- mdl$fitted.values
 plot_bin(dat, x_var = "SibSp", facet_var = "Sex", fmla = fmla)
 ```
 
@@ -389,8 +414,8 @@ Including the newly-created `TicketNCohort` variable seems to help.
 ```{r}
 fmla <- "Survived ~ SibSp + Sex + TicketN*TicketNCohort"
 dat <- full[train_index, ]
-mdl <- full[train_index, ] %>% model_bin(fmla)
-dat$pred <- mdl$finalModel$fitted.values  
+mdl <- glm(fmla, family = "binomial", data = dat)
+dat$pred <- mdl$fitted.values
 plot_bin(dat, x_var = "SibSp", facet_var = "Sex", fmla = fmla)
 ```
 
@@ -403,8 +428,8 @@ Survival odds fall with increasing numbers of parents and children.  Again, male
 ```{r}
 fmla <- "Survived ~ Parch + Sex"
 dat <- full[train_index, ]
-mdl <- full[train_index, ] %>% model_bin(fmla)
-dat$pred <- mdl$finalModel$fitted.values  
+mdl <- glm(fmla, family = "binomial", data = dat)
+dat$pred <- mdl$fitted.values
 plot_bin(dat, x_var = "Parch", facet_var = "Sex", fmla = fmla)
 ```
 
@@ -413,8 +438,8 @@ Including the newly-created `TicketNCohort` variable seems to help.  Hard to tel
 ```{r}
 fmla <- "Survived ~ Parch + Sex + TicketN*TicketNCohort"
 dat <- full[train_index, ]
-mdl <- full[train_index, ] %>% model_bin(fmla)
-dat$pred <- mdl$finalModel$fitted.values  
+mdl <- glm(fmla, family = "binomial", data = dat)
+dat$pred <- mdl$fitted.values
 plot_bin(dat, x_var = "Parch", facet_var = "Sex", fmla = fmla)
 ```
 
@@ -427,8 +452,8 @@ Embarking from Queenstown was a death sentence for males for some reason.  `Emba
 ```{r}
 fmla <- "Survived ~ Embarked*Sex"
 dat <- full[train_index, ]
-mdl <- dat %>% model_bin(fmla)
-dat$pred <- mdl$finalModel$fitted.values  
+mdl <- glm(fmla, family = "binomial", data = dat)
+dat$pred <- mdl$fitted.values
 plot_bin(dat, x_var = "Embarked", facet_var = "Sex", fmla = fmla)
 ```
 
@@ -439,8 +464,8 @@ Here is the survival log-odds for `FarePerPass`.  I don't really see much of a r
 ```{r}
 fmla <- "Survived ~ Sex + FarePerPass"
 dat <- full[train_index, ] %>% mutate(FarePerPassBin = cut(FarePerPass, 10))
-mdl <- dat %>% model_bin(fmla)
-dat$pred <- mdl$finalModel$fitted.values  
+mdl <- glm(fmla, family = "binomial", data = dat)
+dat$pred <- mdl$fitted.values
 plot_bin(dat, x_var = "FarePerPassBin", facet_var = "Sex", fmla = fmla)
 ```
 
@@ -466,8 +491,8 @@ Generally, it's better to have a cabin on a deck at the top of the alphabet.  No
 ```{r}
 fmla <- "Survived ~ Deck + Sex"
 dat <- full[train_index, ]
-mdl <- dat %>% model_bin(fmla)
-dat$pred <- mdl$finalModel$fitted.values  
+mdl <- glm(fmla, family = "binomial", data = dat)
+dat$pred <- mdl$fitted.values
 plot_bin(dat, x_var = "Deck", facet_var = "Sex", fmla = fmla)
 ```
 
@@ -497,8 +522,8 @@ full <- full %>%
 ```{r}
 fmla <- "Survived ~ NetSurv + Sex"
 dat <- full[train_index, ]
-mdl <- dat %>% model_bin(fmla)
-dat$pred <- mdl$finalModel$fitted.values  
+mdl <- glm(fmla, family = "binomial", data = dat)
+dat$pred <- mdl$fitted.values
 plot_bin(dat, x_var = "NetSurv", facet_var = "Sex", fmla = fmla)
 ```
 
@@ -519,8 +544,8 @@ This could be an ordinal factor variable, but I think it works fine as a numeric
 ```{r}
 fmla <- "Survived ~ NetSurv + Sex"
 dat <- full[train_index, ]
-mdl <- dat %>% model_bin(fmla)
-dat$pred <- mdl$finalModel$fitted.values  
+mdl <- glm(fmla, family = "binomial", data = dat)
+dat$pred <- mdl$fitted.values
 plot_bin(dat, x_var = "NetSurv", facet_var = "Sex", fmla = fmla)
 ```
 

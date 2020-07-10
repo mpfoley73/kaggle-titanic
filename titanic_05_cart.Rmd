@@ -1,0 +1,520 @@
+---
+title: "Kaggle - Titanic"
+subtitle: "Step 5: Decision Trees"
+author: "Michael Foley"
+date: "7/9/2020"
+output: 
+  html_document:
+    theme: flatly
+    toc: true
+    highlight: haddock
+    fig_width: 9
+    fig_caption: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Bootstrap aggregation, or *bagging*, is a general-purpose procedure for reducing the variance of a statistical learning method.  The algorithm constructs *B* regression trees using *B* bootstrapped training sets, and averages the resulting predictions. These trees are grown deep, and are not pruned. Hence each individual tree has high variance, but low bias. Averaging the *B* trees reduces the variance.  The predicted value for an observation is the mode (classification) or mean (regression) of the trees. *B* usually equals ~25.
+
+Random forests improve bagged trees by way of a small tweak that de-correlates the trees.  As in bagging, the algorithm builds a number of decision trees on bootstrapped training samples. But when building these decision trees, each time a split in a tree is considered, a random sample of *mtry* predictors is chosen as split candidates from the full set of *p* predictors.  A fresh sample of *mtry* predictors is taken at each split.  Typically $mtry \sim \sqrt{p}$.  Bagged trees are thus a special case of random forests where *mtry = p*.
+
+Gradient boosting machine (GBM) is an additive modeling algorithm that gradually builds a composite model by iteratively adding *M* weak sub-models based on the performance of the prior iteration's composite. The idea is to fit a weak model, then replace the response values with the residuals from that model, and fit another model. Adding the residual prediction model to the original response prediction model produces a more accurate model. GBM repeats this process over and over, running new models to predict the residuals of the previous composite models, and adding the results to produce new composites. With each iteration, the model becomes stronger and stronger.
+
+Extreme Gradient Boosting (XGBoost) is a boosting algorithm based on GBM.  XGboost applies regularization to reduce overfitting. I don't know anything about how it works, but it does well in Kaggle competitions, and you have to learn it somehow, so I'll give it a try.
+
+The best model was bagging. The model run on the full training data set had a holdout set accuracy of 0.8531.
+
+After fitting to the full training data set, the performance on the testing data set on kaggle was 0.78468 accuracy - a half percent worse than the straight logistic regression 0.78947 accuracy.
+
+
+# Setup
+
+```{r message=FALSE}
+library(tidyverse)
+library(caret)
+library(recipes)
+library(plotROC)
+library(precrec)
+```
+
+The initial data management created the data set `full`, with training rows indexed by `train_index`.  I added another predictor variables in the exploratory analysis and split the data into `training` and `testing`, then 80:20 split `training` into `training_80` for training and `training_20` to compare models.
+
+```{r warning=FALSE, message=FALSE}
+load("./titanic_02.RData")
+```
+
+I'll use 10-fold CV. 
+
+```{r}
+train_control <- trainControl(
+  method = "cv", number = 10,
+  savePredictions = "final",
+  summaryFunction = twoClassSummary,
+  classProbs = TRUE
+)
+```
+
+I'll try four models: bagging, random forests, gbm, and xgboost.  
+
+# Model
+
+My model data set variables are `PassengerID`, `Survived`, and 13 predictors.
+
+```{r}
+mdl_vars <- c("PassengerId", mdl_vars)
+mdl_vars
+```
+
+I'll use the recipe method to train.  From the exploratory analysis section I've decided to create interactions `Pclass*Sex`, `Embarked*Sex`, `TicketN:TicketNCohort`, and `Age*AgeCohort*Sex`.
+
+```{r}
+rcpe <- recipe(Survived ~ ., data = training_80[, mdl_vars]) %>%
+  update_role(PassengerId, new_role = "id variable") %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  # I don't think centering/scaling helps with tree models
+  # step_center(Age, SibSp, Parch, TicketN, FarePerPass, NetSurv) %>%
+  # step_scale(Age, SibSp, Parch, TicketN, FarePerPass, NetSurv) %>%
+  step_interact(terms = ~
+                  starts_with("Sex_"):starts_with("Pclass_") +
+                  starts_with("Sex_"):starts_with("Embarked_") +
+                  TicketN:starts_with("TicketNCohort_") +
+                  Age:starts_with("AgeCohort_"):starts_with("Sex_")) 
+
+prep(rcpe, training = training_80)
+```
+
+# Bagging
+
+The bagging model had a holdout set accuracy of 0.8531, sensitivity of 0.7206, specificity of 0.9358, and AUC of 0.8831.
+
+Caret has no hyperparameters to tune with this model. Here is the fit summary.
+
+```{r message=FALSE}
+set.seed(1970)
+mdl_bag <- train(
+  rcpe,
+  training_80[, mdl_vars],
+  method = "treebag",
+  trControl = train_control,
+  metric = "ROC"
+)
+mdl_bag
+```
+
+`varImp()` ranks the predictors by the sum of the reduction in the loss function attributed to each variable at each split. The most important variable here was `FarePerPass`. In the straight logistic regression model, it was `NetSurv`, followed by `Pclass`.
+
+```{r}
+plot(varImp(mdl_bag), main = "Boosting Variable Importance")
+```
+
+## Resampling Performance
+
+The accuracy from the confusion matrix is 0.8403.
+
+```{r}
+confusionMatrix(mdl_bag)
+```
+
+## Holdout Performance
+
+Here is the model performance on the holdout data set.
+
+```{r}
+preds_bag <- bind_cols(
+  predict(mdl_bag, newdata = training_20, type = "prob"),
+  Predicted = predict(mdl_bag, newdata = training_20, type = "raw"),
+  Actual = training_20$Survived
+)
+
+confusionMatrix(preds_bag$Predicted, reference = preds_bag$Actual, positive = "Yes")
+```
+The sensitivity is 0.7206 and the specificity is 0.9358, so the model is more prone to *under-predicting* survivors.  The accuracy from the confusion matrix is 0.8531.  `precrec::evalmod()` will calculate the confusion matrix values from the model using the holdout data set.  The AUC on the holdout set is 0.8831.
+
+```{r}
+mdl_auc <- Metrics::auc(actual = preds_bag$Actual == "Yes", preds_bag$Yes)
+yardstick::roc_curve(preds_bag, Actual, Yes) %>%
+  autoplot() +
+  labs(
+    title = "Bagging Model ROC Curve, Test Data",
+    subtitle = paste0("AUC = ", round(mdl_auc, 4))
+  )
+```
+
+The gain curve plots the cumulative summed true outcome versus the fraction of items seen when sorted by the predicted value. The “wizard” curve is the gain curve when the data is sorted by the true outcome. If the model’s gain curve is close to the wizard curve, then the model predicted the response variable well. The gray area is the “gain” over a random prediction.
+
+68 of the 177 passengers in the holdout set survived.
+
+* The gain curve encountered 34 survivors (50%) within the first 37 observations (21%). 
+
+* It encountered the 68th survivor on the 177th observation (100%).
+
+```{r}
+options(yardstick.event_first = FALSE)  # set the second level as success
+yardstick::gain_curve(preds_bag, Actual, Yes) %>%
+  autoplot() +
+  labs(title = "Bagging Model Gain Curve on Test Data")
+```
+
+
+# Random Forest
+
+The random forest model had a holdout set accuracy of 0.8475 - a little worse than bagging's 0.8531, sensitivity of 0.6765, specificity of 0.9541, and AUC of 0.8732 - worse
+than bagging's 0.8831.
+
+The sensitivity is  (worse than bagging) and the specificity is  (better than bagging). The accuracy is  - (worse than bagging). The AUC on the holdout set is .
+
+Each time a split in a tree is considered, a random forest model takes a random sample of *mtry* predictors as split candidates from the full set of *p* predictors. Hyperparameter `mtry` can take any value from 1 to 13 (the number of predictors) and I expect the best value to be near $\sqrt{13} \sim 4$. Here is the fit summary.
+
+```{r}
+set.seed(1970)
+mdl_rf <- train(
+  rcpe,
+  training_80[, mdl_vars],
+  method = "rf",
+  metric = "ROC",
+  tuneGrid = expand.grid(mtry = 1:13), # searching around mtry=4,
+  trControl = train_control
+)
+mdl_rf$bestTune
+```
+
+The best tuning parameter is `mtry = 7`. You can see the relationship between AUC and `mtry` in the plot.
+
+```{r}
+ggplot(mdl_rf) +
+  labs(title = "Random Forest Parameter Tuning", x = "mtry")
+```
+
+The most important variable was the interaction `Sex:Age:AgeCohort` and `FarePerPass` second. Bagging had the same top two, but with flipped order.
+
+```{r}
+ggplot(varImp(mdl_rf))
+```
+
+## Resampling Performance
+
+The accuracy from the confusion matrix is 0.8487 - a little better than bagging's 0.8403.
+
+```{r}
+confusionMatrix(mdl_rf)
+```
+
+## Holdout Performance
+
+Here is the model performance on the holdout data set.
+
+```{r}
+preds_rf <- bind_cols(
+  predict(mdl_rf, newdata = training_20, type = "prob"),
+  Predicted = predict(mdl_rf, newdata = training_20, type = "raw"),
+  Actual = training_20$Survived
+)
+
+confusionMatrix(preds_rf$Predicted, reference = preds_rf$Actual, positive = "Yes")
+```
+
+The sensitivity is 0.6765 (worse than bagging) and the specificity is 0.9541 (better than bagging). The accuracy is 0.8475 - (worse than bagging). The AUC on the holdout set is 0.8732.
+
+```{r}
+mdl_auc <- Metrics::auc(actual = preds_rf$Actual == "Yes", preds_rf$Yes)
+yardstick::roc_curve(preds_rf, Actual, Yes) %>%
+  autoplot() +
+  labs(
+    title = "Random Forest Model ROC Curve, Test Data",
+    subtitle = paste0("AUC = ", round(mdl_auc, 4))
+  )
+```
+
+Here is the gain curve. 
+
+68 of the 177 passengers in the holdout set survived.
+
+* The gain curve encountered 34 survivors (50%) within the first 36 observations (21%). 
+
+* It encountered the 68th survivor on the 177th observation (100%).
+
+```{r}
+options(yardstick.event_first = FALSE)  # set the second level as success
+yardstick::gain_curve(preds_rf, Actual, Yes) %>%
+  autoplot() +
+  labs(title = "Random Forest Model Gain Curve on Test Data")
+```
+
+
+# Gradient Boosting
+
+The GBM model had a holdout set accuracy of 0.8475 - tied with random forest but worse than bagging (0.8531), sensitivity of 0.6765, specificity of 0.9541, and AUC of 0.8772.
+
+`gbm` has the following tuneable hyperparameters (see `modelLookup("gbm")`). 
+
+* `n.trees`: number of boosting iterations, $M$
+* `interaction.depth`: maximum tree depth
+* `shrinkage`: shrinkage, $\eta$
+* `n.minobsinnode`: minimum terminal node size
+
+```{r}
+set.seed(1970)
+garbage <- capture.output(
+mdl_gbm <- train(
+  rcpe,
+  training_80[, mdl_vars],
+  method = "gbm",
+  metric = "ROC",
+  tuneLength = 5,
+  trControl = train_control
+))
+mdl_gbm
+mdl_gbm$bestTune
+```
+
+`train()` held constant `shrinkage = 0.1` (\eta) and `n.minobsinnode = 10`, and tuned for optimal values `n.trees = 200` ($M) and `interaction.depth = 2`. You can see the relationship between AUC and `mtry` in the plot.
+
+```{r}
+ggplot(mdl_gbm) +
+  labs(title = "Gradient Boosting Parameter Tuning")
+```
+
+The most important variable was `Sex`, then the interaction `Sex:Age:AgeCohort` and `FarePerPass`.
+
+```{r}
+ggplot(varImp(mdl_gbm), "Gradient Boosting Variable Importance")
+```
+
+## Resampling Performance
+
+The accuracy from the confusion matrix is 0.8291 - the worst of the three models considered so far.
+
+```{r}
+confusionMatrix(mdl_gbm)
+```
+
+## Holdout Performance
+
+Here is the model performance on the holdout data set.
+
+```{r}
+preds_gbm <- bind_cols(
+  predict(mdl_gbm, newdata = training_20, type = "prob"),
+  Predicted = predict(mdl_gbm, newdata = training_20, type = "raw"),
+  Actual = training_20$Survived
+)
+
+confusionMatrix(preds_gbm$Predicted, reference = preds_gbm$Actual, positive = "Yes")
+```
+
+The sensitivity is 0.6765 and the specificity is 0.9541  (same as random forest). The accuracy is 0.8475 - (same as random forest, worse than bagging). The AUC on the holdout set is 0.8772.
+
+```{r}
+mdl_auc <- Metrics::auc(actual = preds_gbm$Actual == "Yes", preds_gbm$Yes)
+yardstick::roc_curve(preds_gbm, Actual, Yes) %>%
+  autoplot() +
+  labs(
+    title = "Gradient Boosting Model ROC Curve, Test Data",
+    subtitle = paste0("AUC = ", round(mdl_auc, 4))
+  )
+```
+
+Here is the gain curve. 
+
+68 of the 177 passengers in the holdout set survived.
+
+* The gain curve encountered 34 survivors (50%) within the first 37 observations (21%). 
+
+* It encountered the 68th survivor on the 152nd observation (86%).
+
+```{r}
+options(yardstick.event_first = FALSE)  # set the second level as success
+yardstick::gain_curve(preds_gbm, Actual, Yes) %>%
+  autoplot() +
+  labs(title = "Gradient Boosting Model Gain Curve on Test Data")
+```
+
+
+# XGBoost
+
+The XGBoost model had a holdout set accuracy of 0.8644 (best of all the models), sensitivity of 0.7353, specificity of 0.9450, and AUC of 0.8859.
+
+`xgbTree` has the following tuneable hyperparameters (see `modelLookup("xgbTree")`). The first three are the same as `xgb`.
+
+* `nrounds`: number of boosting iterations, $M$
+* `max_depth`: maximum tree depth
+* `eta`: shrinkage, $\eta$
+* `gamma`: minimum loss reduction
+* `colsamle_bytree`: subsample ratio of columns
+* `min_child_weight`: minimum size of instance weight
+* `substample`: subsample percentage
+
+```{r}
+set.seed(1970)
+garbage <- capture.output(
+mdl_xgb <- train(
+  rcpe,
+  training_80[, mdl_vars],
+  method = "xgbTree",
+  metric = "ROC",
+  tuneLength = 5,
+  trControl = train_control
+))
+#mdl_xgb
+mdl_xgb$bestTune
+```
+
+`train()` held constant `gamma = 0`, `min_child_weight = 1`, and tuned for optimal values `nrounds = 100`, `max_depth = 2`, `eta = 0.3`, `colsample_bytree = 0.6`, and `subsample = 0.5`. There are too many tuneable parameters to see their relationships with AUC.
+
+```{r}
+#ggplot(mdl_xgb) +
+#  labs(title = "XGBoost Parameter Tuning", x = "mtry")
+```
+
+The most important variable was the interaction `Sex:Age:AgeCohort` and `Age` second.
+
+```{r}
+ggplot(varImp(mdl_xgb))
+```
+
+## Resampling Performance
+
+The accuracy from the confusion matrix is 0.8207 - worst of the four models.
+
+```{r}
+confusionMatrix(mdl_xgb)
+```
+
+## Holdout Performance
+
+Here is the model performance on the holdout data set.
+
+```{r}
+preds_xgb <- bind_cols(
+  predict(mdl_xgb, newdata = training_20, type = "prob"),
+  Predicted = predict(mdl_xgb, newdata = training_20, type = "raw"),
+  Actual = training_20$Survived
+)
+
+confusionMatrix(preds_xgb$Predicted, reference = preds_xgb$Actual, positive = "Yes")
+```
+
+The sensitivity is 0.7353 and the specificity is 0.9450. The accuracy is 0.8644 (best of the bunch). The AUC on the holdout set is 0.8859.
+
+```{r}
+mdl_auc <- Metrics::auc(actual = preds_xgb$Actual == "Yes", preds_xgb$Yes)
+yardstick::roc_curve(preds_xgb, Actual, Yes) %>%
+  autoplot() +
+  labs(
+    title = "XGBoost Model ROC Curve, Test Data",
+    subtitle = paste0("AUC = ", round(mdl_auc, 4))
+  )
+```
+
+Here is the gain curve. 
+
+68 of the 177 passengers in the holdout set survived.
+
+* The gain curve encountered 34 survivors (50%) within the first 36 observations (21%). 
+
+* It encountered the 68th survivor on the 162th observation (92%).
+
+```{r}
+options(yardstick.event_first = FALSE)  # set the second level as success
+yardstick::gain_curve(preds_xgb, Actual, Yes) %>%
+  autoplot() +
+  labs(title = "XGBoost Model Gain Curve on Test Data")
+```
+
+
+# Conclusions
+
+Compare the models with `evalmod()`.
+
+```{r}
+scores_list <- join_scores(
+  predict(mdl_bag, newdata = training_20, type = "prob")$Yes,
+  predict(mdl_rf, newdata = training_20, type = "prob")$Yes,
+  predict(mdl_gbm, newdata = training_20, type = "prob")$Yes,
+  predict(mdl_xgb, newdata = training_20, type = "prob")$Yes
+)
+labels_list <- join_labels(
+  training_20$Survived,
+  training_20$Survived,
+  training_20$Survived,
+  training_20$Survived
+)
+
+pe <- evalmod(
+  scores = scores_list, 
+  labels = labels_list,
+  modnames = c("Bagging", "Random Forest", "Gradient Boosting", "XGBoost"),
+  posclass = "Yes")
+
+autoplot(pe, "ROC")
+```
+
+```{r}
+pe
+```
+The highest AUC was with XGBoost.
+
+```{r}
+resamps <- resamples(list('Bagging' = mdl_bag, 
+                          'Random Forest' = mdl_rf,
+                          'Gradient Boosting' = mdl_gbm,
+                          'XGBoost' = mdl_xgb))
+summary(resamps)
+bwplot(resamps, layout = c(3, 1))
+```
+
+# Refit Final Model
+
+I'll do a final fit with the elastic net model to the entire `training` set to predict on `testing`.
+
+`train()` held constant `gamma = 0`, `min_child_weight = 1`, and tuned for optimal values `nrounds = 100`, `max_depth = 2`, `eta = 0.3`, `colsample_bytree = 0.6`, and `subsample = 0.5`. There are too many tuneable parameters to see their relationships with AUC.
+
+Here is the fit summary.
+
+```{r}
+set.seed(1970)
+mdl_final <- train(
+  rcpe,
+  training[, mdl_vars],
+  method = "xgbTree",
+  tuneGrid = expand.grid(
+    gamma = 0.0,
+    min_child_weight = 1,
+    nrounds = 100,
+    max_depth = 2,
+    eta = 0.3, 
+    colsample_bytree = 0.6,
+    subsample = 0.5
+  ),
+  trControl = train_control,
+  metric = "ROC"
+)
+mdl_final
+```
+
+`FarePerPass` ws the most important predictor this time!
+
+```{r}
+varImp(mdl_final)
+```
+
+## Resampling Performance
+
+The accuracy from the confusion matrix below is 0.8361.
+
+```{r}
+confusionMatrix(mdl_final)
+```
+
+## Create Submission File
+
+```{r}
+preds <- predict(mdl_final, newdata = testing) %>% {ifelse(. == "Yes", 1, 0)}
+sub_file <- data.frame(PassengerId = testing$PassengerId, Survived = preds)
+write.csv(sub_file, file = "./titanic_05_cart.csv", row.names = FALSE)
+```
+
+

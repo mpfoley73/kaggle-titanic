@@ -25,9 +25,9 @@ Gradient boosting machine (GBM) is an additive modeling algorithm that gradually
 
 Extreme Gradient Boosting (XGBoost) is a boosting algorithm based on GBM.  XGboost applies regularization to reduce overfitting. I don't know anything about how it works, but it does well in Kaggle competitions, and you have to learn it somehow, so I'll give it a try.
 
-The best model was bagging. The model run on the full training data set had a holdout set accuracy of 0.8531.
+The best model was XGBoost. The model run on the full training data set had a holdout set accuracy of 0.8644.
 
-After fitting to the full training data set, the performance on the testing data set on kaggle was 0.78468 accuracy - a half percent worse than the straight logistic regression 0.78947 accuracy.
+After fitting to the full training data set, the performance on the testing data set on kaggle was 0.79186 accuracy.
 
 
 # Setup
